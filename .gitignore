@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 가상환경 / IDE
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 학습 결과 (체크포인트·로그는 ~/ray_results 에 쌓이지만, 레포 안에 둘 경우 대비)
+ray_results/
+checkpoints/
+*.log
+events.out.tfevents.*
+
+# 참고 논문 PDF — 출판사 저작권 + 용량 문제로 기본 제외 (비공개 레포면 아래 두 줄 지워도 됨)
+paper/
+docs/paper/

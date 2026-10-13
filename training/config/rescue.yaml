@@ -1,0 +1,90 @@
+# 2계층(통합 할당 / primitive) 분리 PPO 학습 설정.
+# 실행 (Exploration_rescue/ 에서):  python -m training.train training/config/rescue.yaml -t 10
+framework: torch
+env: rescue
+
+# ---- PPO 하이퍼파라미터 ----
+gamma: 0.99 # 할인율
+lambda: 0.95 # GAE 계수. 1에 가까울수록 실제 보상 위주(분산 증가), 0에 가까울수록 critic 추정 위주(편향 증가)
+kl_coeff: 0.2 # 이전 정책과의 KL 패널티 초기 계수
+kl_target: 0.01 # 목표 KL, 실제 KL이 이보다 크면 kl_coeff를 키우고, 작으면 줄임 (자동 조절)
+clip_param: 0.2 # PPO clip 범위. 한 번 업데이트할 때 정책 확률비를 0.8~1.2로 제한
+vf_clip_param: 20.0 # 가치 함수 업데이트 폭 제한
+vf_loss_coeff: 0.5 # 전체 loss에서 critic loss의 비중
+entropy_coeff: 0.01 # 엔트로피 보너스. 클수록 다양한 행동을 시도 (탐험)
+lr: 3.0e-4 # 학습률 (Adam)
+train_batch_size: 4000 # 한 번 학습할 때 모으는 환경 step 수
+rollout_fragment_length: 200 # 워커가 한 번에 수집하는 step 길이
+sgd_minibatch_size: 500 # 미니배치 크기 (4000 -> 미니배치 8개)
+num_sgd_iter: 5 # 같은 배치를 몇 번 반복 학습할지 (epoch)
+batch_mode: truncate_episodes # 에피소드가 끝나지 않아도 fragment 단위로 잘라서 수집 (끝 부분은 critic 값으로 bootstrap)
+observation_filter: NoFilter # 관측 정규화 안 함 (환경에서 이미 정규화)
+
+# ---- 병렬 수집 ----
+num_workers: 8 # 데이터 수집 프로세스 수
+num_envs_per_worker: 2 # 워커 하나가 동시에 돌리는 환경 수 (총 8개 환경 병렬)
+num_gpus: 0 # 학습에 쓰는 GPU 수 (0 = CPU)
+
+
+# ---- 네트워크 ----
+model:
+  custom_model: rescue_model # 등록한 모델 이름
+  custom_action_dist: rescue_multi_action # 등록한 행동 분포 이름
+  custom_model_config:          # models/rescue_net.py DEFAULT_MODEL_OPTIONS
+    embed_dim: 128              # 할당 정책의 특징 차원 D
+    n_heads: 8                  # MHA 헤드 수 n_h  (D_h = D / n_h)
+    knn_k: 6                    # 인코더에서 태스크마다 참고할 이웃 태스크 수 k (k_j = min(k, T^i - 1))
+    clip: 10.0                  # pointer 점수 clip 상수 C    (pointer tanh clipping)
+    local_features: 128         # primitive local CNN 출력
+    cnn_filters: [[16, 3, 2], [32, 3, 2], [64, 3, 1]] # CNN 층 구성: [채널 수, 커널 크기, stride] x 3층
+    primitive_hidden: [128, 64] # primitive MLP 은닉층 크기
+    primitive_glimpse: none     # primitive 입력에 γ^i: none(미사용) / detach(사용, gradient 차단) / grad(사용, 할당까지 역전파)
+    critic_state_features: 128  # critic의 중앙 state CNN 출력 차원
+    critic_local_features: 64   # critic의 local CNN 출력 차원
+    critic_hidden: [128, 64]    # critic MLP 은닉층 크기
+    activation: relu            # 활성화 함수
+
+
+# --- 환경 ----
+env_config:
+  map_mode: random              # random: 매 에피소드 장애물 맵을 새로 생성 / file: map_path 의 고정 맵
+  map_path: maps/map_target/map_20260720_153619.json # 사용할 맵 (장애물, 조난자, depot) — map_mode: file 일 때만
+  rows: 40                      # random 맵 크기 (학습 중에는 고정 — critic state 크기 때문)
+  cols: 60
+  obstacle_ratio: [0.2, 0.3]    # random 맵 장애물 비율 (depot 에서 못 가는 빈 칸은 장애물로 메운 뒤 기준)
+  target_mode: random           # random: 매 에피소드 조난자 수/위치 새로 (depot 에서 도달 가능한 칸만) / file: 맵 파일 조난자
+  num_targets: [10, 20]         # 조난자 수 범위 (양끝 포함)
+  state_size: 21                # local 창 (홀수) — primitive 입력 / waypoint 창
+  local_channels: [obstacle, agents]   # primitive local 입력 채널. waypoint 채널은 자동 추가 -> CNN 입력 3채널
+                                # 추가 가능: frontier, explored, target  예) [obstacle, agents, frontier]
+  global_downsample: 2          # critic이 보는 중앙 state의 축소 배율
+  n_hop: 3                      # 통신 hop 수. 지도 병합, 이웃 context, 순차 디코딩 그룹, 믿음 전파 범위
+  max_episode_len: 400          # 에피소드 최대 길이 t_max. 시간, 거리 특징의 정규화 분모로도 쓰임
+  position_mode: depot          # 모든 UAV가 depot에서 출발
+  capacity: 3                   # UAV 한 대가 구조 가능한 최대 횟수 (구호품 수). depot에서 재보충
+  lock_rescue: true             # 태스크 선택 = 구조/만료/도달불가까지 유지
+  lock_return: true             # depot을 고르면 도착할 때까지 유지
+  mask_return_infeasible: false # true면 구조 후 시간 안에 depot으로 못 돌아오는 태스크를 마스크
+  target_golden_time: [100, 350]  # 조난자 골든타임 범위
+  deadline_mode: from_start     # 골든타임을 처음 발견한 시점부터 셈 (from_discovery 면 발견했을 때부터)
+  max_targets: 20               # 할당 태스크 슬롯 수 T. 행동 수 = T + 2 (explore, depot)
+  agents:                       # UAV별 센서 범위와 통신 범위
+    - {sensor_range: 4, comm_range: 8}
+    - {sensor_range: 4, comm_range: 8}
+    - {sensor_range: 4, comm_range: 8}
+    - {sensor_range: 4, comm_range: 8}
+
+
+
+  # ---- env/rewards.py 계수 ----
+  reward:
+    w_rescue: 1.0               # 구조 1명 = +w_rescue / N_T (팀 공유)
+    w_expire: 1.0               # 만료 1명 = -w_expire / N_T
+    w_explore: 0.5              # 팀 탐색 비율 증가분 (potential shaping)
+    w_duplicate: 0.003          # 중복 추적 (먼 쪽만, 매 step): 더 가까운 UAV 도 같은 태스크를 쫓음 / 이미 구조된 태스크를 쫓음
+    w_new_cells: 0.1            # primitive (explore): 자기 센서로 처음 밝힌 셀 수 / (2 r_s + 1)^2
+    w_progress: 0.05            # primitive (rescue / return): 목적지 BFS 거리 감소 1 칸당
+    w_step: 0.001               # primitive: 매 step 비용
+    w_blocked: 0.02             # primitive: 막힌 방향 이동 시도
+    w_collision: 0.1            # primitive: UAV 간 충돌 (같은 칸 / 자리 맞바꿈, depot 제외) — 한 칸 진행 보상보다 크게
+    w_team: 0.0                 # primitive 에 팀 할당 보상 공유 비율
