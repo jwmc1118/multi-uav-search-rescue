@@ -89,5 +89,5 @@ env_config:
     w_progress: 0.05            # primitive (rescue / return): 목적지 BFS 거리 감소 1 칸당
     w_step: 0.001               # primitive: 매 step 비용
     w_blocked: 0.02             # primitive: 막힌 방향 이동 시도
-    w_collision: 1.0            # primitive: UAV 간 충돌 (같은 칸 / 자리 맞바꿈, depot 제외) — 한 칸 진행 보상보다 크게
+    w_collision: 0.5            # primitive: UAV 간 충돌 (같은 칸 / 자리 맞바꿈, depot 제외) — 한 칸 진행 보상보다 크게
     w_team: 0.0                 # primitive 에 팀 할당 보상 공유 비율
