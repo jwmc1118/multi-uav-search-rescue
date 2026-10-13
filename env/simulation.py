@@ -309,6 +309,7 @@ class RescueSimulation:
             elif self.cfg["target_mode"] == "random" and self.cfg["num_targets"]:
                 self._randomize_target_specs()
         self.time = 0
+        self.collisions_total = 0
         self.knowledge.reset()
 
         self.targets = [Target(pos=tuple(pos), golden_time=self._sample_golden(g))
@@ -425,6 +426,8 @@ class RescueSimulation:
             "expired_total": sum(1 for t in self.targets if t.expired_at is not None),
             "active": sum(1 for t in self.targets if t.active),
             "discovered": sum(1 for t in self.targets if t.discovered),
+            "discovered_total": sum(1 for t in self.targets if t.discovered),
+            "collisions_total": self.collisions_total,   # 에피소드 누적 충돌 (충돌한 UAV 수 합)
             "explored": self.team_explored_ratio(),
         }
 
@@ -461,6 +464,7 @@ class RescueSimulation:
             ctx.moved.append(a.pos != prev)
             ctx.blocked_move.append(blocked_try)
         ctx.collided = self._collisions(prev_pos)
+        self.collisions_total += sum(ctx.collided)
         ctx.duplicate_pursuit = self._duplicate_pursuit()
         for i, a in enumerate(self.agents):
             g = ctx.goal[i]
@@ -633,10 +637,17 @@ class RescueSimulation:
                 task_present[s] = 1.0
                 task_ids[s] = ti
 
-            # δ^i_e = [T^i / N_T, E^i_t / |C_free|, d^i_e]
+            # δ^i_e = [T^i / N_T, E^i_t / |C_free|, d^i_e, g^i]
+            # g^i = (N_T - D^i) / N_T : 아직 못 찾은 조난자 비율 (UAV 는 전체 조난자 수 N_T 를 안다고 가정).
+            # D^i = UAV i 가 아는 발견된 조난자 수 (구조 / 만료 포함). 후보 조건(env/allocation.py prepare)과 같은 기준
+            known_free = self.knowledge.known_free[i]
+            d_known = sum(1 for ti, t in enumerate(self.targets)
+                          if t.discovered and (known_free[t.pos] or ti in self.beliefs.rescued[i]))
             explore_feats = np.array([min(1.0, ns.n_known / n_targets),
-                                      float(self.knowledge.known_free[i].sum()) / n_free,
-                                      nd(ns.d_explore)], np.float32)
+                                      float(known_free.sum()) / n_free,
+                                      nd(ns.d_explore),
+                                      float(np.clip((len(self.targets) - d_known) / n_targets, 0.0, 1.0))],
+                                     np.float32)
             # δ^i_d = [x_d/W, y_d/H, d^i_d]
             depot_feats = np.array([*self.frame.normalized(self.depot), nd(ns.d_depot)], np.float32)
             # ξ^i = [x/W, y/H, c/c_max]

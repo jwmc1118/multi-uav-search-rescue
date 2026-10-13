@@ -71,12 +71,15 @@ def main():
     # 회귀 점검: 학습 시 RLlib 은 ACTIONS 를 numpy 로 넘긴다 -> 모델이 그대로 재생해야 함 (재샘플링 금지)
     import torch
     from ray.rllib.models.modelv2 import restore_original_dimensions
-    obs_t = restore_original_dimensions(torch.as_tensor(batch[SampleBatch.OBS]), policy.observation_space, "torch")
-    lt, _ = policy.model({"obs": obs_t, SampleBatch.ACTIONS: torch.as_tensor(batch[SampleBatch.ACTIONS])}, [], None)
+    dev = policy.device                     # CUDA torch 면 모델이 GPU 에 있다 -> 입력도 같은 장치로
+    obs_t = restore_original_dimensions(torch.as_tensor(batch[SampleBatch.OBS], device=dev),
+                                        policy.observation_space, "torch")
+    lt, _ = policy.model({"obs": obs_t, SampleBatch.ACTIONS: torch.as_tensor(batch[SampleBatch.ACTIONS], device=dev)},
+                         [], None)
     ln, _ = policy.model({"obs": obs_t, SampleBatch.ACTIONS: np.asarray(batch[SampleBatch.ACTIONS])}, [], None)
     assert torch.allclose(lt, ln), "numpy ACTIONS 를 모델이 재생하지 못함"
     prev = np.asarray(batch[SampleBatch.ACTION_DIST_INPUTS])
-    assert np.allclose(prev[:, :-env.n_agents], ln.detach().numpy()[:, :-env.n_agents], atol=1e-4), \
+    assert np.allclose(prev[:, :-env.n_agents], ln.detach().cpu().numpy()[:, :-env.n_agents], atol=1e-4), \
         "학습 재생 logit != rollout logit"
     print("[replay] numpy/tensor ACTIONS 재생 일치, rollout logit 과 일치")
 

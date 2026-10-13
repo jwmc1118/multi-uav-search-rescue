@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from env.modes import N_MODES, N_MSG_TYPES
-from models.alloc_policy import AllocationPolicy, SELF_DIM
+from models.alloc_policy import AllocationPolicy, EXPLORE_DIM, SELF_DIM
 from models.critic import CentralCritic
 from models.primitive_policy import PrimitivePolicy, slot_mode_onehot, N_ACTIONS, WP_DIM
 
@@ -48,9 +48,11 @@ def stack_obs(obs):
 
 
 class RescueNet(nn.Module):
-    def __init__(self, n_agents, n_tasks, local_size, local_channels, state_channels, options=None):
+    def __init__(self, n_agents, n_tasks, local_size, local_channels, state_channels, options=None,
+                 explore_dim=EXPLORE_DIM):
         """local_channels: 관측 local 채널 수 (cfg["local_channels"] 개수, waypoint 제외)
-        state_channels: critic 중앙집중 state 채널 수 (env.knowledge.N_CHANNELS)"""
+        state_channels: critic 중앙집중 state 채널 수 (env.knowledge.N_CHANNELS)
+        explore_dim: explore 노드 입력 δ^i_e 차원 (obs space 의 explore_feats)"""
         super().__init__()
         cfg = copy.deepcopy(DEFAULT_MODEL_OPTIONS)
         cfg.update(options or {})
@@ -61,7 +63,8 @@ class RescueNet(nn.Module):
         D = cfg["embed_dim"]
 
         # ---- actors (실행 시 사용) ----
-        self.alloc = AllocationPolicy(n_tasks, N_MSG_TYPES, D, cfg["n_heads"], cfg["knn_k"], cfg["clip"])
+        self.alloc = AllocationPolicy(n_tasks, N_MSG_TYPES, D, cfg["n_heads"], cfg["knn_k"], cfg["clip"],
+                                      explore_dim)
         self.primitive = PrimitivePolicy(local_channels, local_size, cfg["local_features"], D, filt,
                                          tuple(cfg["primitive_hidden"]), act, cfg["primitive_glimpse"])
         # ---- critics (학습 전용, actor 와 인코더 비공유) ----

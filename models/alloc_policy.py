@@ -9,7 +9,7 @@
     F̃^i_j = (F^i_{𝒦_j} - 1_{k_j} F^i_j) W_msg + 1_{k_j} b_msg   ∈ R^{k_j x D}
     F̂^i_j = [F^i_j ; F̃^i_j]                                ∈ R^{(k_j+1) x D}
     H^i_j = 1^T_{k_j+1} (F̂^i_j W_agg + 1_{k_j+1} b_agg)    ∈ R^{1xD}
-    F^i_e = δ^i_e W_exp + b_exp,   δ^i_e = [T^i/N_T, E^i_t/|C_free|, d^i_e]
+    F^i_e = δ^i_e W_exp + b_exp,   δ^i_e = [T^i/N_T, E^i_t/|C_free|, d^i_e, g^i]
     F^i_d = δ^i_d W_depot + b_depot, δ^i_d = [x_d/W, y_d/H, d^i_d]
 
 ──────────────── Context ────────────────
@@ -40,24 +40,24 @@ import torch.nn.functional as F
 from models.attention import MultiHeadAttention
 
 TASK_DIM = 4          # δ^i_j
-EXPLORE_DIM = 3       # δ^i_e
+EXPLORE_DIM = 4       # δ^i_e 기본값 (실제 값은 obs space 에서 읽어 넘긴다: models/rllib_model.py)
 DEPOT_DIM = 3         # δ^i_d
 SELF_DIM = 3          # ξ^i
 MASK_VALUE = -1e9
 
 
 class TaskEncoder(nn.Module):
-    def __init__(self, embed_dim=128, knn_k=4):
+    def __init__(self, embed_dim=128, knn_k=4, explore_dim=EXPLORE_DIM):
         super().__init__()
         self.k = knn_k
         self.w_node = nn.Linear(TASK_DIM, embed_dim)       # W_node, b_node
         self.w_msg = nn.Linear(embed_dim, embed_dim)       # W_msg, b_msg
         self.w_agg = nn.Linear(embed_dim, embed_dim)       # W_agg, b_agg
-        self.w_exp = nn.Linear(EXPLORE_DIM, embed_dim)     # W_exp, b_exp
+        self.w_exp = nn.Linear(explore_dim, embed_dim)     # W_exp, b_exp
         self.w_depot = nn.Linear(DEPOT_DIM, embed_dim)     # W_depot, b_depot
 
     def forward(self, task_feats, task_present, explore_feats, depot_feats):
-        """task_feats (M, T, 4), task_present (M, T), explore/depot (M, 3) -> H (M, T+2, D)."""
+        """task_feats (M, T, 4), task_present (M, T), explore (M, explore_dim), depot (M, 3) -> H (M, T+2, D)."""
         M, T, _ = task_feats.shape
         Fn = self.w_node(task_feats)                                   # (M,T,D)  F^i_j
         H_tasks = Fn.new_zeros(Fn.shape)
@@ -126,12 +126,13 @@ class PointerDecoder(nn.Module):
 class AllocationPolicy(nn.Module):
     """Encoder + Context + Decoder + 순차 디코딩."""
 
-    def __init__(self, n_tasks, n_msg_types=4, embed_dim=128, n_heads=8, knn_k=4, clip=10.0):
+    def __init__(self, n_tasks, n_msg_types=4, embed_dim=128, n_heads=8, knn_k=4, clip=10.0,
+                 explore_dim=EXPLORE_DIM):
         super().__init__()
         self.T = n_tasks
         self.A = n_tasks + 2
         self.n_msg_types = n_msg_types
-        self.encoder = TaskEncoder(embed_dim, knn_k)
+        self.encoder = TaskEncoder(embed_dim, knn_k, explore_dim)
         self.context = ContextEncoder(embed_dim, msg_dim=3 + 2 + n_msg_types)
         self.decoder = PointerDecoder(embed_dim, n_heads, clip)
 

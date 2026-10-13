@@ -115,6 +115,28 @@ python -m tests.smoke_test                                             # 설치 
 | `WinError 1455 페이징 파일이 너무 작습니다` / `LOW MEMORY` | CUDA torch + 워커 많음 → CPU torch 로 바꾸거나 `num_workers` 줄이기 / 가상 메모리 늘리기 |
 | `No module named 'training'` | 레포 루트에서 실행하거나 `python training/train.py` (스크립트가 루트를 경로에 추가함) |
 
+### Linux 에서 나는 문제
+
+`include_dashboard=False` 여도 Ray 1.3 의 raylet 은 노드마다 dashboard agent 를 띄운다. 아래 에러는 이 agent 가 죽었다 살아나기를 반복하는 것이라 **학습 자체는 진행되지만** 로그가 계속 쌓인다. 둘 다 `requirements.txt` 에 버전을 고정해 두었다.
+
+| 증상 (`(raylet)` 로그, `The agent on node ... failed`) | 원인 / 해결 |
+|---|---|
+| `module 'aioredis' has no attribute 'create_redis_pool'` | aioredis 2.x → `pip install aioredis==1.3.1` |
+| `socket.gaierror: [Errno -5] No address associated with hostname` (`prometheus_client/exposition.py`) | prometheus_client 0.14+ → `pip install prometheus_client==0.13.1` |
+| `CryptographyDeprecationWarning: Python 3.8 is no longer supported` / `Not all Ray CLI dependencies were found` | 경고일 뿐, 무시 |
+
+### 동작 확인된 버전 (2026-10, Linux, Python 3.8.20)
+
+| 패키지 | 버전 | 패키지 | 버전 |
+|---|---|---|---|
+| ray | 1.3.0 | aiohttp | 3.7.4 |
+| gym | 0.19.0 | aioredis | 1.3.1 |
+| torch | 1.8.1+cu111 | prometheus_client | 0.13.1 |
+| numpy | 1.23.5 | redis | 4.1.4 |
+| protobuf | 3.20.3 | pygame | 2.6.1 |
+| matplotlib | 3.7.5 | | |
+| pip / setuptools / wheel | 24.0 / 65.5.0 / 0.38.4 | | |
+
 `num_workers` 는 (CPU 코어 수 − 4) 정도, 워커 하나당 RAM 약 0.5 GB (CPU torch 기준).
 
 ## 실행
@@ -130,9 +152,35 @@ python training/train.py --smoke                                  # 직접 실�
 python -m training.evaluate <checkpoint> -n 20  [--render]
 ```
 
+### 학습 결과 위치
+
+```
+marl_models/
+├── MultiPPO/                          ← 새로 학습하면 덮어씀
+│   ├── checkpoints/checkpoint_XXXXXX/ ← 10 iteration 마다 저장, 전부 유지 (train.py CHECKPOINT_FREQ)
+│   ├── reward_curve.png               ← 보상·에피소드 길이·loss·entropy 곡선 (--plot-every, 기본 10 iteration)
+│   ├── progress.csv / result.json / events.out.tfevents.* / params.json
+└── best_model/
+    └── <학습 시작 시각>/                ← 학습마다 새 폴더 (덮어쓰지 않음). 그 학습에서 지금까지 가장 좋은 모델
+        ├── checkpoint_XXXXXX/
+        └── params.json / best_info.json (iteration, reward) / reward_curve.png
+```
+
+- 체크포인트는 저장 즉시 디스크에 남으므로 학습이 중간에 멈춰도 사라지지 않는다. Ctrl+C 로 멈추면 그 시점도 한 번 더 저장한다.
+- 이어서 학습: `python training/train.py --resume <체크포인트 폴더>`
+  - `MultiPPO/checkpoints/` 안의 것이면 폴더를 유지하고 이어서 쓴다 (그 뒤 iteration 기록은 곡선에서 잘라냄).
+  - `best_model/...` 등 다른 곳의 것이면 `MultiPPO/` 를 새로 만들어 그 지점부터 학습한다.
+- `--resume` 없이 실행하면 `MultiPPO/` 는 덮어쓰지만 `best_model/` 은 그대로 남는다.
+- 모델 보기: `main.py` 의 `CHECKPOINT` 에 체크포인트 폴더 경로 (`MultiPPO/checkpoints/...` 또는 `best_model/...`).
+- `--smoke` 는 `marl_models/MultiPPO_smoke/` 에 따로 쓰고 best 는 만들지 않는다.
+
 ## 보상 (`env/rewards.py`, 계수 = yaml `env_config.reward`)
 
-- 할당: `(w_rescue·#구조 − w_expire·#만료)/N_T + w_explore·Δ(팀 탐색 비율)` (팀 공유)
+- 할당 (양(+) 보상은 구조할 때만, 패널티는 팀 공유 + 중복 추적만 개인):
+  `r_alloc^i(t) = w_rescue·|R_t|/N_T − (w_undisc/N_T)·Σ_{j∈U_t} min(1, t/max(1, τ_j−δ)) − (w_unres/N_T)·Σ_{j∈F_t} min(1, t/max(1, τ_j))`
+  - `R_t` 이번 step 구조, `U_t` 미발견 (구조된 것만 제외, 만료 포함), `F_t` 발견했지만 미구조 (만료 포함)
+  - `τ_j` 골든타임 마감 시각 (`end_time`, 없으면 `golden_time`), `δ = discover_margin` (발견 마감을 앞당김)
+  - 시간이 지날수록 못 찾은 / 못 구한 조난자 몫 패널티가 커지고 마감 후엔 1 로 포화. 구조하면 그 몫이 즉시 사라짐
   `− w_duplicate·1[중복 추적]` (개인, 매 step, 먼 쪽만: 더 가까운 UAV 도 같은 태스크를 쫓거나 이미 구조된 태스크를 모르고 쫓음 — 보상은 학습용이라 전지적 판정)
 - primitive (개인, 모드별): explore = `w_new_cells·|E^i_t|/(2r_s+1)²` (자기 센서로 처음 밝힌 셀, 팀이 몰랐던 셀만) /
   rescue·return = `w_progress·(목적지 BFS 거리 감소)` / 공통 `− w_step − w_blocked·1[막힌 이동] − w_collision·1[UAV 간 충돌: 같은 칸·자리 맞바꿈, depot 제외] (+ w_team·팀 보상)`

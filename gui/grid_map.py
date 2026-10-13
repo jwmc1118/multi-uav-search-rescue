@@ -36,6 +36,8 @@ from env.knowledge import CH_OBSTACLE, CH_EXPLORED, CH_FRONTIER, CH_TARGET, CH_A
 
 MAP_DIR = os.path.join("maps", "map")
 MAP_TARGET_DIR = os.path.join("maps", "map_target")
+# training/train.py 가 체크포인트를 저장하는 곳 (레포 루트/marl_models)
+MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "marl_models")
 
 # ---- colors ----
 COLOR_BG = (255, 255, 255)
@@ -293,7 +295,7 @@ class GridMap:
                             items.append((f"{d}/{fn}", os.path.join(d, fn)))
             self.overlay_items = items
         else:
-            root = os.path.expanduser("~/ray_results")
+            root = MODELS_DIR
             ckpts = sorted(glob.glob(os.path.join(root, "**", "checkpoint-*"),
                                      recursive=True))
             ckpts = [c for c in ckpts if not c.endswith(".tune_metadata")]
@@ -788,7 +790,7 @@ class GridMap:
         pygame.draw.rect(surf, COLOR_OVERLAY_BG, o, border_radius=8)
         pygame.draw.rect(surf, COLOR_TEXT, o, width=2, border_radius=8)
         title = "Load map  (Esc)" if self.overlay == "load" \
-            else "Load checkpoint from ~/ray_results  (Esc)"
+            else "Load checkpoint from marl_models/  (Esc)"
         surf.blit(self.f.render(title, True, COLOR_TEXT), (o.x + 16, o.y + 14))
 
         self.overlay_rects = []

@@ -15,6 +15,12 @@ numpy==1.23.5
 protobuf==3.20.3
 # ray 1.3 대시보드 에이전트가 aiohttp.signals 를 쓴다 (3.8+ 에서 삭제)
 aiohttp==3.7.4
+# ray 1.3 대시보드 에이전트가 aioredis.create_redis_pool 을 쓴다 (2.x 에서 삭제)
+aioredis==1.3.1
+# 0.14+ 는 ray 1.3 이 넘기는 빈 주소(addr="")를 getaddrinfo 로 조회하다 실패 ("No address associated with hostname")
+prometheus_client==0.13.1
 
 pyyaml
 pygame==2.6.1
+# 학습 곡선 PNG (training/reward_plot.py). 3.7.x 가 Python 3.8 지원 마지막
+matplotlib==3.7.5

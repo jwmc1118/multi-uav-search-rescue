@@ -32,7 +32,8 @@ class RescueModel(TorchModelV2, nn.Module):
         self.n_alloc = agent_space["node_mask"].shape[0]
         S, _, C = agent_space["local"].shape
         self.net = RescueNet(self.n_agents, self.max_targets, S, C, orig["state"].shape[-1],
-                             model_config.get("custom_model_config", {}))
+                             model_config.get("custom_model_config", {}),
+                             explore_dim=agent_space["explore_feats"].shape[0])
         self.alloc_greedy = False
         self._values = None
         # rollout 시 extra_action_out 으로 저장되는 alloc 헤드 컬럼이 train_batch 에 실려 오도록.

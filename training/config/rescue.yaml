@@ -23,7 +23,7 @@ observation_filter: NoFilter # 관측 정규화 안 함 (환경에서 이미 정
 # ---- 병렬 수집 ----
 num_workers: 8 # 데이터 수집 프로세스 수
 num_envs_per_worker: 2 # 워커 하나가 동시에 돌리는 환경 수 (총 8개 환경 병렬)
-num_gpus: 0 # 학습에 쓰는 GPU 수 (0 = CPU)
+num_gpus: 1 # 학습에 쓰는 GPU 수 (0 = CPU)
 
 
 # ---- 네트워크 ----
@@ -65,7 +65,7 @@ env_config:
   lock_rescue: true             # 태스크 선택 = 구조/만료/도달불가까지 유지
   lock_return: true             # depot을 고르면 도착할 때까지 유지
   mask_return_infeasible: false # true면 구조 후 시간 안에 depot으로 못 돌아오는 태스크를 마스크
-  target_golden_time: [100, 350]  # 조난자 골든타임 범위
+  target_golden_time: [100, 300]  # 조난자 골든타임 범위
   deadline_mode: from_start     # 골든타임을 처음 발견한 시점부터 셈 (from_discovery 면 발견했을 때부터)
   max_targets: 20               # 할당 태스크 슬롯 수 T. 행동 수 = T + 2 (explore, depot)
   agents:                       # UAV별 센서 범위와 통신 범위
@@ -79,12 +79,15 @@ env_config:
   # ---- env/rewards.py 계수 ----
   reward:
     w_rescue: 1.0               # 구조 1명 = +w_rescue / N_T (팀 공유)
-    w_expire: 1.0               # 만료 1명 = -w_expire / N_T
-    w_explore: 0.5              # 팀 탐색 비율 증가분 (potential shaping)
-    w_duplicate: 0.003          # 중복 추적 (먼 쪽만, 매 step): 더 가까운 UAV 도 같은 태스크를 쫓음 / 이미 구조된 태스크를 쫓음
+    # w_expire: 1.0               # 만료 1명 = -w_expire / N_T
+    # w_explore: 0.5              # 팀 탐색 비율 증가분 (potential shaping)
+    w_undisc: 0.005             # 미발견 조난자 시간가중 패널티
+    w_unres: 0.005              # 발견했지만 미구조 조난자 시간가중 패널티
+    discover_margin: 10         # δ: 발견 마감 = 골든타임 - δ
+    w_duplicate: 0.001          # 중복 추적 (먼 쪽만, 매 step): 더 가까운 UAV 도 같은 태스크를 쫓음 / 이미 구조된 태스크를 쫓음
     w_new_cells: 0.1            # primitive (explore): 자기 센서로 처음 밝힌 셀 수 / (2 r_s + 1)^2
     w_progress: 0.05            # primitive (rescue / return): 목적지 BFS 거리 감소 1 칸당
     w_step: 0.001               # primitive: 매 step 비용
     w_blocked: 0.02             # primitive: 막힌 방향 이동 시도
-    w_collision: 0.1            # primitive: UAV 간 충돌 (같은 칸 / 자리 맞바꿈, depot 제외) — 한 칸 진행 보상보다 크게
+    w_collision: 1.0            # primitive: UAV 간 충돌 (같은 칸 / 자리 맞바꿈, depot 제외) — 한 칸 진행 보상보다 크게
     w_team: 0.0                 # primitive 에 팀 할당 보상 공유 비율

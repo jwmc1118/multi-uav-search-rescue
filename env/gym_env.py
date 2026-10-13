@@ -11,7 +11,8 @@ Role_selection 의 CoverageEnv 패턴: 팀 전체가 하나의 정책이고, 관
     task_feats    (T, 4)     δ^i_j = [x/W, y/H, τ_j, d^i_j]                              -> Encoder (CCN)
     task_present  (T,)       실제 후보 = 1 (패딩 = 0)                                     -> k-NN / MHA key 마스크
     task_ids      (T,)       sim.targets index (패딩 -1)                                   -> 순차 디코딩 그룹 충돌
-    explore_feats (3,)       δ^i_e = [T^i/N_T, E^i_t/|C_free|, d^i_e]                     -> Encoder (W_exp)
+    explore_feats (4,)       δ^i_e = [T^i/N_T, E^i_t/|C_free|, d^i_e, g^i]                -> Encoder (W_exp)
+                             g^i = (N_T - D^i)/N_T 못 찾은 조난자 비율 (D^i = i 가 아는 발견 수, 구조·만료 포함)
     depot_feats   (3,)       δ^i_d = [x_d/W, y_d/H, d^i_d]                                -> Encoder (W_depot)
     self_feats    (3,)       ξ^i = [x/W, y/H, c/c_max]                                    -> Context
     node_mask     (A,)       admissible 𝒜^i (lock 이면 강제 슬롯만 1)
@@ -34,6 +35,8 @@ from env.agent import Robot
 from env.knowledge import N_CHANNELS
 from env.modes import N_MSG_TYPES
 
+EXPLORE_DIM = 4                    # δ^i_e = [T^i/N_T, E^i_t/|C_free|, d^i_e, g^i]
+
 N_PRIMITIVE = len(Robot.ACTIONS)   # 9 = 8방향 + stay
 
 
@@ -54,7 +57,7 @@ class RescueMultiEnv(gym.Env):
             "task_feats": spaces.Box(-1.0, 1.0, (T, 4), np.float32),
             "task_present": spaces.Box(0.0, 1.0, (T,), np.float32),
             "task_ids": spaces.Box(-1.0, inf, (T,), np.float32),
-            "explore_feats": spaces.Box(0.0, 1.0, (3,), np.float32),
+            "explore_feats": spaces.Box(0.0, 1.0, (EXPLORE_DIM,), np.float32),
             "depot_feats": spaces.Box(-1.0, 1.0, (3,), np.float32),
             "self_feats": spaces.Box(-1.0, 1.0, (3,), np.float32),
             "node_mask": spaces.Box(0.0, 1.0, (A,), np.float32),

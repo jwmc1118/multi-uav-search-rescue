@@ -15,7 +15,8 @@ venv/
 .DS_Store
 Thumbs.db
 
-# 학습 결과 (체크포인트·로그는 ~/ray_results 에 쌓이지만, 레포 안에 둘 경우 대비)
+# 학습 결과 (train.py 가 marl_models/ 에 저장)
+marl_models/
 ray_results/
 checkpoints/
 *.log
