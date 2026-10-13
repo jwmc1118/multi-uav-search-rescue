@@ -6,6 +6,7 @@
 2) 한 명 구조 -> 그 step 에 +w_rescue/N_T, 이후 그 사람 몫 패널티 사라짐
 3) 팀 패널티는 모든 UAV 동일, duplicate 패널티는 해당 UAV 만
 4) explore_feats shape (4,), g^i 가 발견 수에 따라 1 -> 0
+5) from_start: 미발견 조난자도 마감(end_time)이 지나면 만료
 """
 import numpy as np
 import yaml
@@ -99,9 +100,22 @@ def check_explore_g(sim):
     print(f"[4] explore_feats (4,) ok, g: {gs[0]:.2f} -> {gs[len(gs) // 2]:.2f} -> {gs[-1]:.2f} ({n_t} targets)")
 
 
+def check_undiscovered_expire(sim):
+    assert sim.cfg["deadline_mode"] == "from_start", "이 점검은 from_start 기준"
+    t = min(sim.targets, key=lambda t: t.end_time)
+    sim.time = t.end_time - 1
+    sim._process_deadlines()
+    assert t.expired_at is None and not t.discovered
+    sim.time = t.end_time
+    expired = sim._process_deadlines()
+    assert t.expired_at == t.end_time and sim.targets.index(t) in expired, "미발견 조난자도 마감에 만료돼야 함"
+    print(f"[5] undiscovered target expired at t={t.expired_at} (end_time)")
+
+
 if __name__ == "__main__":
     check_monotonic(make_sim())
     check_rescue(make_sim())
     check_team_and_duplicate(make_sim())
     check_explore_g(make_sim())
+    check_undiscovered_expire(make_sim())
     print("smoke_reward: all ok")

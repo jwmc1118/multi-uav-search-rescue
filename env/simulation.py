@@ -403,7 +403,9 @@ class RescueSimulation:
     def _process_deadlines(self):
         expired = []
         for ti, t in enumerate(self.targets):
-            if t.active and t.discovered and t.end_time is not None and self.time >= t.end_time:
+            # 발견 여부와 상관없이 마감이 지나면 만료. from_start 는 미발견도 end_time 이 있어 만료되고,
+            # from_discovery 의 미발견은 end_time 이 아직 없어 (발견 시점 기준이라) 만료되지 않는다.
+            if t.active and t.end_time is not None and self.time >= t.end_time:
                 t.expired_at = self.time
                 for i, a in enumerate(self.agents):
                     if a.assigned_target == ti:
