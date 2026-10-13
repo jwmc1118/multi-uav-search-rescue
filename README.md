@@ -94,7 +94,8 @@ Python **3.8** 전용이다. gym 0.19 의 메타데이터 버그 때문에 pip /
 ```powershell
 conda create -n exploration_rescue python=3.8 -y
 conda activate exploration_rescue
-python -m pip install "pip<24.1" "setuptools==65.5.0" "wheel<0.40.0"     # PowerShell 은 < 때문에 따옴표 필수
+python -m pip install "pip<24.1" "setuptools==65.5.0" "wheel<0.40.0" setuptools_scm   # PowerShell 은 < 때문에 따옴표 필수
+#   setuptools_scm: --no-build-isolation 일 때 gpustat(ray 의존성) 빌드에 필요
 
 # torch: CPU 권장 (모델이 작아서 GPU 이득이 거의 없고, CUDA 빌드는 워커마다 메모리를 수 GB 씩 먹는다)
 pip install torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
