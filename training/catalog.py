@@ -2,16 +2,16 @@
 from ray.tune.registry import register_env
 from ray.rllib.models import ModelCatalog
 
-from env.gym_env import RescueMultiEnv
-from models.rllib_model import RescueModel
-from training.action_dist import HierarchicalMultiActionDistribution
+from env.role.gym_env import RoleEnv
+from models.role.rllib_model import RoleModel
+from training.role.action_dist import RoleActionDistribution
 
-ENV_NAME = "rescue"
-MODEL_NAME = "rescue_model"
-DIST_NAME = "rescue_multi_action"
+ROLE_ENV_NAME = "rescue_role"          # 계층 구조 env (env/role/simulation.py)
+ROLE_MODEL_NAME = "role_model"         # models/role/rllib_model.py
+ROLE_DIST_NAME = "role_multi_action"   # training/role/action_dist.py
 
 
 def register_all():
-    register_env(ENV_NAME, lambda cfg: RescueMultiEnv(cfg))
-    ModelCatalog.register_custom_model(MODEL_NAME, RescueModel)
-    ModelCatalog.register_custom_action_dist(DIST_NAME, HierarchicalMultiActionDistribution)
+    register_env(ROLE_ENV_NAME, lambda cfg: RoleEnv(cfg))
+    ModelCatalog.register_custom_model(ROLE_MODEL_NAME, RoleModel)
+    ModelCatalog.register_custom_action_dist(ROLE_DIST_NAME, RoleActionDistribution)

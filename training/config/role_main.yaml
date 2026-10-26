@@ -1,0 +1,75 @@
+# main.py 전용 설정 (학습은 role.yaml 을 사용)
+# Role 정책 설정 — 역할 선택 (EXPLORE / RESCUE / RETURN): 학습 / 규칙, 역할 결정 · Role 이벤트, role 보상 weight, 네트워크
+# (env/role/simulation.py, policies/role_rules.py rule_role, models/role/net.py — 공유 이종 그래프 GNN + role decoder)
+# 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml)
+env_config:
+  # ---- 헤드별 정책: learned = 학습 / rule = 규칙 정책 (policies/role_rules.py, 그 헤드는 loss · critic 에서 제외) ----
+  # ablation: (rule, rule, rule) / (learned, rule, rule) / (learned, learned, rule) / (learned, learned, learned)
+  #           = 전부 규칙 (기준선) / Role 만 학습 / Role + Rescue 학습 / 전부 학습
+  policy_mode: {role: learned}    # Role 헤드: learned = 학습 / rule = 규칙 (policies/role_rules.py rule_role)
+
+  # ---- 역할 결정 ----
+  role:
+    max_redecide: 1             # 하위 할당 실패(고를 노드 없음) 시 RETURN 으로 대체하는 횟수 상한 (점검용 —
+                                #   역할 마스크가 남은 생존자 / 덩어리를 미리 반영하므로 정상이면 실패 없음)
+    return_with_cap: true       # 용량이 남아도 RETURN 허용 (부분 귀환). false = 용량 0 일 때만 RETURN
+                                #   역할 마스크: cap 0 -> RETURN, EXPLORE / 0 < cap < cap_max 이고 부족분 >= return_min_deficit
+                                #   -> RESCUE, EXPLORE, RETURN / 그 외 (cap_max 포함) -> RESCUE, EXPLORE
+                                #   (그룹 belief 발견 수 = N_T 면 EXPLORE 제외, 전부 막히면 RETURN)
+    return_min_deficit: 1       # 부분 귀환 허용 최소 부족분 (cap_max - cap). 충전 직후 RETURN 은 자동으로 막힘 (반복 귀환 방지)
+
+  # ---- 그리디 정책 (policies/role_rules.py RuleDecider, run_rules · main rules 모드 · rule 헤드) ----
+  #   role + rescue (이벤트 1 / 2): 차례 (급한 생존자에 가장 가까운 UAV) 의 담당 후보 생존자 -> RESCUE, 없으면 EXPLORE (용량 0 RETURN)
+  #   role + rescue (이벤트 3 / 4 / 5, 한 대): 용량 0 RETURN, 할당 가능 생존자 있음 -> RESCUE (EDF), 없으면 EXPLORE
+  #   explore 1 단계 share_rr (배정 0 덩어리를 크기 순으로 한 바퀴 -> 몫 |C|/(n+1) 최대), 2 단계 κ Hungarian
+
+  # ---- 이벤트 (env/role/simulation.py) ----
+  # Role 이벤트 — 대상 UAV 만 역할부터 다시 결정, 나머지는 역할 · 목표 유지:
+  #   1 시작 (전체) / 2 새 생존자 (그 그룹의 EXPLORE UAV) / 3 구조 완료 (그 UAV) / 4 Return 완료 (그 UAV) / 5 목표 무효 (그 UAV)
+  #   (5 에는 exploration complete 포함: 그룹 belief 발견 수가 N_T 에 처음 도달하면 그 그룹 EXPLORE UAV 전원.
+  #    이후 그 그룹은 역할 마스크에서 EXPLORE 금지 — 그리디는 할당 가능 생존자 -> RESCUE, 없으면 RETURN)
+  # 결정 순서 (policies/decision_order.py, 그리디 / 학습 공통, 한 대가 결정할 때마다 남은 대상으로 다시 계산):
+  #   role 차례 = 여유 시간 σ 가 작은 생존자부터 가장 가까운 UAV (닿는 UAV 가 없으면 가까운 생존자 거리 -> 용량 -> 번호),
+  #   1 단계 차례 = 배정 0 덩어리를 크기 순으로 가장 가까운 UAV, 그다음 몫 최대 덩어리,
+  #   2 단계 차례 = 남은 가장 큰 구간에 가장 가까운 참여자 (참여자 = 그 덩어리를 고른 UAV + 기존 배정자)
+  # 덩어리 쪼개짐 / 합쳐짐은 재결정 없이 소속만 이어 붙인다
+  events:
+    goal_latch: true            # explore 목표 셀 유지: 관측되어 frontier 가 아님 / 도달 불가 / 내 구간 밖 N step 일 때만 변경
+    goal_latch_outside_steps: 3 # 목표 셀이 내 구간 밖에 이만큼 연속이면 변경
+    no_segment_steps: 3         # rebalance 후 내 구간이 없는 상태가 이만큼 연속이면 이벤트 5 (목표 무효)
+    comm_hysteresis: 2          # 통신 링크: 생성 거리 <= R_c, 해제 거리 > R_c + 이 값 (그룹 / belief / 보상 / 특징 공통, 0 = 끔)
+    log_events: true            # 이벤트 / 역할 전환 / 목표 변경 기록 (info event_stats, custom_metrics)
+    log_dir: null               # 에피소드 로그 JSON 폴더 (null = 저장 안 함. run_rules 는 results/rules/event_logs/<tag>)
+
+  # ---- 보상 (env/role/simulation.py role_rewards, training/role/ppo.py 결정 단위 SMDP) ----
+  #   r_role(i, t) = (|R_t| - w_x |X_t|) / N_T - c_osc · 1_osc(i)
+  #   결정 t0 ~ 다음 role 결정 t1 의 할인 누적 + γ^(t1 - t0) V(s_t1) 로 bootstrap (γ = env.yaml 최상위 gamma)
+  rewards:
+    role:
+      w_x: 2.0                  # 만료 1 명당 (팀 공유, / N_T)
+      c_osc: 0.03               # 역할 진동 penalty: osc_window 안에 A -> B -> A, 두 전환 모두 비강제면 되돌아가는 결정에
+                                #   (강제 = 이전 역할이 마스크로 막힘 (용량 0 / 생존자 없음 / 덩어리 없음) 또는 귀환 완료 직후)
+      osc_window: 10            # 진동 판정 창 W (step) — 역할 진동 penalty 와 목표 진동 로그 (A -> B -> A) 공통
+      terminal_unrescued_as_expired: true   # 에피소드가 끝날 때 아직 구조되지 않은 생존자 = 마지막 step 의 만료 X
+
+# ---- 네트워크 (models/role/net.py): 공유 이종 그래프 GNN (env.yaml model.gnn) -> 역할 노드 3 개 decoder
+#   q_ctx = W_c [h_self ‖ t / T]
+#   h_RES = W_r [mean ‖ max (할당 가능 S 임베딩) ‖ g_res],  g_res = [할당 가능 수 / N_T, 최소 slack]
+#   h_EXP = W_e [mean ‖ max (고를 수 있는 K 임베딩) ‖ g_exp],  g_exp = [덩어리 수 / K_max, size_feat(frontier 셀 수),
+#     ψ^{f,G} = 그룹 belief 발견 생존자 수 / N_T]
+#   h_RET = W_t h_D (depot 노드 임베딩).  Q = W_q [q_ctx ‖ mean(H)] -> MHA glimpse -> tanh clip pointer
+#   GNN 은 세 head 가 공유 (세 헤드 loss 가 함께 학습)
+model:
+  custom_model_config:
+    role:
+      n_heads: 8                # decoder MHA 헤드 수 (glimpse)
+      clip: 10.0                # pointer 점수 tanh clip 상수 C
+      entropy_coeff: 0.01       # 이 헤드 엔트로피 보너스 계수
+      value_norm: true          # 이 헤드 critic ValueNorm (MAPPO)
+      critic:                     # role 헤드 critic (CTDE rich critic, actor 와 인코더 비공유)
+        cnn_filters: [[16, 3, 2], [32, 3, 2], [64, 3, 1]]   # critic CNN 층 [채널, 커널, stride]
+        state_features: 128       # critic 중앙 state CNN 출력 차원
+        local_features: 64        # critic local CNN 출력 차원
+        hidden: [128, 64]         # critic MLP 은닉층
+        set_dim: 64               # critic 조난자 / 팀 집합 임베딩 차원
+        set_heads: 4              # critic 조난자 attention 헤드 수

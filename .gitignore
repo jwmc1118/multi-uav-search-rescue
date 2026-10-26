@@ -25,3 +25,12 @@ events.out.tfevents.*
 # 참고 논문 PDF — 출판사 저작권 + 용량 문제로 기본 제외 (비공개 레포면 아래 두 줄 지워도 됨)
 paper/
 docs/paper/
+
+# 테스트 출력 (tests/role/smoke_role_gui.py 의 GUI 프레임 PNG)
+tests/out/
+
+# 분석 그래프 (GUI Alloc Plots)
+figures/
+
+# 분석 결과 (evaluation/upper_bound.py)
+results/

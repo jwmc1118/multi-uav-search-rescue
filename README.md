@@ -1,91 +1,115 @@
-# Exploration_rescue — 통합 할당 기반 Multi-UAV Search & Rescue RL
+# Multi-UAV Search & Rescue RL
 
-Role policy 를 없애고 **rescue / explore / return 을 하나의 attention pointer 결정**으로 통합한 2계층 구조
-(할당 → primitive). 참고 논문: `paper/` (CapAM, Role-selection, Two-stage — 저작권 때문에 git 에는 안 올림). `docs/research_pipeline_summary.md` 와
-`docs/Framework.png` 는 **이전 3계층(role/task/primitive) 설계 기록**이다.
+계층 구조 결정: Role 선택 (Explore / Rescue / Return) → Rescue 할당 (조난자) / Explore 2 단계 (frontier DBSCAN 덩어리 선택 →
+같은 덩어리를 m 대가 맡으면 측지 k-medoids 구간 분할 → 구간 선택) → BFS 경로 추종.
+세 정책 (role / rescue / explore) 은 각각 학습 (3 헤드 MAPPO) 또는 규칙 정책으로 고를 수 있다 (yaml `policy_mode`).
+덩어리 · 구간 생성 (DBSCAN, k-medoids) 은 env 가 하므로 학습 / 규칙 어느 쪽이든 같다.
 
-모든 명령은 **`Exploration_rescue/` 폴더에서** 실행한다 (패키지 import 기준점).
+참고 논문: `paper/` (저작권 때문에 git 에는 안 올림). `docs/research_pipeline_summary.md`, `docs/Framework.png` 는 초기 3계층 설계 기록.
+모든 명령은 **레포 루트에서** 실행한다 (패키지 import 기준점).
 
 ## 폴더 구조
 
-| 폴더 | 역할 | 파일 |
-|---|---|---|
-| `env/` | **환경** (규칙·관측·보상). 학습 프레임워크와 무관 | `simulation.py` 한 tick 진행·관측 / `map_gen.py` 랜덤 맵·조난자 생성 / `allocation.py` 노드 집합·admissible·lock·순차 디코딩 규칙·충돌 해결 / `knowledge.py` 센싱·n-hop 지식 병합·local 크롭 / `pathfinding.py` BFS 거리장·경로·waypoint / `agent.py` UAV (8방향 + stay, 360° 센서) / `modes.py` 모드·메시지 타입 / `targets.py` / `step_context.py` tick 사건 묶음 / `rewards.py` 보상 / `gym_env.py` RLlib gym 래퍼 / `stand_in_policy.py` GUI 용 임시 정책 |
-| `models/` | **네트워크** (논문 그림과 1:1) | `alloc_policy.py` Encoder(k-NN CCN + explore/depot) · Context · Decoder(MHA glimpse + pointer) · 순차 디코딩 / `primitive_policy.py` local ⊕ waypoint 채널 CNN / `critic.py` CTDE critic / `rescue_net.py` 전체 조립 (순수 torch) / `rllib_model.py` RLlib 래퍼 / `attention.py` `encoders.py` 공용 블록 |
-| `training/` | **학습** (RLlib 1.3.0 PPO) | `multiagent_ppo.py` 헤드별 GAE + `L = L_alloc + L_prim` / `action_dist.py` 2-head 분포 / `sample_batch_keys.py` / `catalog.py` / `train.py` `evaluate.py` `checkpoint_policy.py` / `config/rescue.yaml` |
-| `gui/` | pygame 시각화·맵 편집기 | `grid_map.py` |
-| `tests/` | 학습 전 점검 | `smoke_test.py` `smoke_loss.py` `smoke_policy.py` |
-| `maps/` | 맵 JSON | `map/` (장애물만) · `map_target/` (타겟·depot 포함) |
+```
+main.py                         GUI 실행 (CHECKPOINT 로 학습 모델 보기, None 이면 규칙 정책)
+env/                            시뮬레이터 — 학습 / 정책과 무관
+├── core/                       공통 세계: base_sim (BaseSimulation: 맵 · 조난자 · 센싱 · 구조 · 재보충 · 마감 · critic 관측) ·
+│                               agent (UAV) · targets · map_gen (랜덤 맵) · pathfinding (BFS) ·
+│                               knowledge (센싱 · n-hop 지도 병합) · beliefs · modes · coords · step_context
+└── role/                       simulation (RoleSimulation: 역할 마스크 (부분 귀환) · Role 이벤트 1~6 · 결정 순서 · 보상 · 관측 · 이벤트 로그) ·
+                                explore (덩어리 대응 · 쪼개짐 / 합쳐짐 · 구간 rebalance · 2 단계 유지 UAV 매칭 · 노드 특징 / 간선) ·
+                                graph_obs (이종 그래프 관측 사양: 노드 U / S / K / D, 간선 특징) ·
+                                connectivity (연결성 C = 연결된 쌍 비율 — rescue 보너스 목표 그래프, 실제 위치는 진단 로그) ·
+                                clusters (frontier DBSCAN · 측지 k-medoids) · gym_env (RoleEnv)
+policies/                       규칙 정책 (학습 없음)
+└── role_rules.py               rule_role / rule_rescue (EDF) / rule_explore (덩어리) / rule_explore_sub (구간, hungarian),
+                                RuleDecider, RandomDecider
+models/                         신경망 (순수 torch + RLlib 래퍼)
+├── capam.py                    CapAM decoder (MHA glimpse + tanh clip pointer) — 세 head 공통 구조 (head 마다 인스턴스)
+├── common/                     attention · encoders (CNN / MLP) · value_norm · critic (CTDE critic, 헤드마다 하나)
+└── role/                       gnn (HeteroGNN: 이종 그래프 메시지 전달, 세 head 공유) · net (RoleNet: 순차 디코딩, 결정마다 그래프 구성 —
+                                role = 역할 노드 3 개 / rescue = S 노드 / explore = 영역 · 구간 K 노드, critic ×3) · rllib_model
+training/                       학습
+├── train.py                    학습 엔트리포인트
+├── config/                     env.yaml (환경 + 학습 공통) · role.yaml · explore.yaml · rescue.yaml (정책별: 학습/규칙 · 이벤트 · 보상 weight · 네트워크)
+├── config_loader.py            yaml 합치기 (기본 env + role + explore + rescue, 뒤 파일이 앞 파일 값을 덮어씀)
+├── role/                       ppo (RolePPOTrainer: 헤드별 GAE · 마스크 loss) · action_dist
+├── callbacks.py                에피소드 지표 (custom_metrics)
+├── catalog.py                  RLlib 등록 (env / model / action dist)
+└── reward_plot.py              학습 곡선 reward_curve.png
+evaluation/                     평가 · 분석 (결과는 results/)
+├── checkpoint_policy.py        체크포인트 로드 + 실행 (GUI / 평가 공용)
+├── evaluate.py                 체크포인트 평가 (--compare: 학습 vs 규칙)
+├── run_rules.py                규칙 정책 200 seed 기준선           -> results/rules/
+├── upper_bound.py              이론적 상한 / 실패 원인 분해         -> results/upper_bound/
+├── scale_eval.py               UAV 수 N 을 바꿔 평가                -> results/scale_eval/
+└── alloc_recorder.py, alloc_plots.py   임무 할당 분석 그래프 (GUI G 키) -> figures/
+gui/                            pygame 시각화 · 맵 편집기 (grid_map.py, style.py = 색 · 도형 · 범례 표, colors.py = UAV 색)
+tests/                          점검 스크립트 (ray 클러스터 불필요)
+└── role/                       test_role_env · test_explore · test_events · test_return_mask · test_gnn ·
+                                test_rewards · test_decide_order · test_join_reselect · test_config ·
+                                test_gui_style · test_role_rule_equiv · smoke_role_policy · smoke_role_gui(_model) · gui_check · print_obs_spec
+maps/                           맵 JSON (map/ 장애물만, map_target/ 조난자 · depot 포함)
+marl_models/                    학습 결과 (RolePPO/, best_model/)
+results/, figures/              평가 · 분석 출력
+```
 
-의존 방향: `env` ← `models` ← `training` ← `gui`/`tests`. 예외: `models/rllib_model.py` 는 컬럼 이름
-(`training/sample_batch_keys.py`) 만 가져온다.
+의존 방향: `env` ← `policies` ← `models` ← `training` ← `evaluation` ← `gui` / `main.py`.
+`RoleSimulation` 은 `env/core/base_sim.py` 의 `BaseSimulation` 을 상속한다.
 
-## 결정 구조
+## 자주 쓰는 명령
+
+```bash
+# GUI
+python main.py
+
+# 학습 — training/config/env.yaml (환경 + 학습 공통) + role.yaml / explore.yaml / rescue.yaml (정책별 설정 · 네트워크) 를 고친 뒤
+python -m training.train                                  # 계층 구조 3 헤드 학습 (ablation 은 각 정책 yaml 의 policy_mode)
+python -m training.train --smoke --local                  # 1 iteration 점검
+
+# 규칙 정책 기준선 / 평가
+python -m evaluation.run_rules                            # 그리디 정책 200 seed
+python -m evaluation.evaluate <checkpoint> --compare                            # 학습 정책 vs 규칙
+python -m evaluation.upper_bound [--checkpoint <checkpoint>]
+python -m evaluation.scale_eval <checkpoint> --n 2,3,4,5,6,8
+
+# 점검
+python -m tests.role.test_role_env
+python -m tests.role.test_explore                         # explore 2 단계 (구간 분할 / 추적 / rebalance)
+python -m tests.role.test_events                          # 이벤트 체계 (Role 1~6, 쪼개짐 / 합쳐짐, 이벤트 5 간격)
+python -m tests.role.test_return_mask                     # 부분 귀환 역할 마스크
+python -m tests.role.test_gnn                             # 그래프 구성 · 순열 불변 · 패딩 · 2-hop · GNN 공유 / gradient · 연결성 · 보상
+python -m tests.role.test_rewards                         # 보상: rescue S - F / U_ε, explore 커버리지 · 옵션 return, 중복 추적, 역할 진동, EXPLORE 마스크, C_pair
+python -m tests.role.test_config                          # yaml: 학습용 = *_main key 구조, 깊은 병합, 보상 키
+python -m tests.role.test_gui_style                       # GUI 스타일 표 (하드코딩 색 없음, 범례 = 그린 요소)
+python -m tests.role.print_obs_spec                       # 관측 명세 (그래프 노드 / 간선 특징 표)
+python -m tests.role.smoke_role_policy
+```
+
+## 학습 결과 위치
 
 ```
-노드 슬롯 A = T + 2 :  [ 태스크 0 .. T-1 | explore (T) | depot (T+1) ]       H^i = [H^i_1; …; H^i_T; F^i_e; F^i_d]
-
-[Encoder]  δ^i_j=[x/W, y/H, τ_j, d^i_j] ─W_node─▶ F ─k-NN(위치) CCN: (F_𝒦 − 1F)W_msg, [F; F̃]W_agg, Σ─▶ H^i_j
-           δ^i_e=[T^i/N_T, E^i/|C_free|, d^i_e] ─W_exp─▶ F^i_e        δ^i_d=[x_d/W, y_d/H, d^i_d] ─W_depot─▶ F^i_d
-[Context]  ξ^i=[x/W, y/H, c/c_max] ─W_self─▶ A_self ;  Σ_{n-hop 이웃} m^{i'}=[x, y, c, g_x, g_y, o(4)] ─W_nbr─▶ A_nbr
-           z^i = [t/t_max, A_self, A_nbr] ─W_q─▶ Q^i
-[Decoder]  𝐊=HW_k, 𝐕=HW_v → MHA(Q, 𝐊, 𝐕) = γ^i ;  P = HW_ptr ;  u = C·tanh((γW_glm)Pᵀ/√D) → Mask(𝒜^i) → softmax
-[순차 디코딩]  dec_rank 순서로 한 명씩: 같은 n-hop 그룹에서 앞 순서가 고른 태스크 mask,
-              이웃 메시지 (g, o) 는 앞 순서 = 이번 선택 / 뒤 순서 = 이전 선택
-[Primitive] CNN( local (S,S,C_l) ⊕ waypoint one-hot 채널 ) ⊕ mode(3) ⊕ waypoint(3) [⊕ γ^i: primitive_glimpse] ─▶ 8방향 + stay
-[Critic, 학습 전용] 헤드별 CentralCritic( CNN(State) ⊕ CNN(Local) ⊕ extra )
+marl_models/
+├── RolePPO/                           ← 학습 결과. 새로 학습하면 덮어씀
+│   ├── checkpoints/checkpoint_XXXXXX/ ← 10 iteration 마다 저장, 전부 유지 (train.py CHECKPOINT_FREQ)
+│   ├── checkpoints/best/              ← 고정 seed 평가 (eval.every iteration 마다, 세 head argmax) 기준 best + best_info.json
+│   ├── reward_curve.png               ← 보상·에피소드 길이·loss·entropy 곡선 (--plot-every, 기본 10 iteration)
+│   ├── progress.csv / result.json / events.out.tfevents.* / params.json
+└── best_model/
+    └── <학습 시작 시각>_role/            ← 학습마다 새 폴더 (덮어쓰지 않음). 그 학습에서 지금까지 가장 좋은 모델 (checkpoints/best 복사)
+        ├── checkpoint_XXXXXX/
+        └── params.json / best_info.json (iteration, eval 구조율 · 길이) / reward_curve.png
 ```
 
-- **admissible 𝒜^i** (`env/allocation.py`): 태스크 = 용량>0 · 다른 UAV 에 lock 안 됨 · BFS 도달 가능 · `d^i_j ≤ 잔여 골든타임`
-  (옵션 `mask_return_infeasible`). explore = 도달 가능한 frontier 있을 때. **depot 은 항상** → 𝒜^i ≠ ∅.
-- **lock**: 태스크 선택 → 구조/만료/도달불가까지 유지 (`lock_rescue`), depot 선택 → 도착까지 유지 (`lock_return`).
-  lock 중엔 강제 슬롯 하나만 admissible, 그 tick 의 alloc loss 는 `alloc_valid = 0` 으로 제외.
-- **통신 제약 반영 (env/beliefs.py)**: 결정(후보·마스크·lock 유지)은 UAV 별 믿음만 쓴다. "다른 UAV 의 lock" 과
-  "구조 완료" 정보는 n-hop 으로 연결될 때만 전달되고(구조 완료는 해당 칸을 직접 봐도 앎), 만료는 각자 계산.
-  통신이 안 되는 UAV 끼리는 모른 채 같은 태스크를 lock 할 수 있고, **n-hop 연결되는 순간 BFS 거리가 가까운 쪽만 유지**,
-  먼 쪽은 lock 해제 후 다음 tick 재결정(`ctx.contact_released`). 같은 통신 그룹 안 동시 중복은 즉시 해결(`ctx.double_selected`).
-- **waypoint**: 선택 노드까지 BFS 경로가 local 창을 벗어나기 직전 셀 (목적지가 창 안이면 목적지).
-  환경이 슬롯별로 `node_wp` 로 주고, 모델이 고른 슬롯 것을 2D 채널로 그린다 → 순환 의존 없음.
-- BFS 는 에이전트당 tick 1회 (`bfs_field`), 균일 비용 8-연결이라 A* 최단거리와 같다.
-- 네트워크 변경: 블록 = `models/<블록>.py`, 연결 = `models/rescue_net.py:forward`,
-  크기 = `training/config/rescue.yaml` 의 `custom_model_config`.
-- **관측을 바꾸려면 세 곳을 같이**: `env/simulation.py:rl_observation` / `env/gym_env.py` (space) /
-  `models/rescue_net.py` (`AGENT_KEYS`, `TEAM_KEYS`). `tests/smoke_test.py` 가 space 적합성을 검사한다.
-
-## 관측
-
-| 키 | shape | 내용 |
-|---|---|---|
-| `local` | (S,S,C_l) | 자기 중심 크롭, 회전 없음 (북쪽 = 위). 맵 밖 = 장애물. 채널 = `local_channels` (기본 obstacle, agents) |
-| `task_feats` / `task_present` / `task_ids` | (T,4) / (T,) / (T,) | δ^i_j, 실제 후보 여부, target index (−1 패딩) |
-| `explore_feats` / `depot_feats` / `self_feats` | (3,) 각각 | δ^i_e, δ^i_d, ξ^i |
-| `node_mask` / `node_xy` / `node_type` / `node_wp` | (A,) / (A,2) / (A,) / (A,3) | 𝒜^i, 슬롯별 목적지 좌표 (메시지 g), 메시지 타입 o, local waypoint |
-| `free_choice` | (1,) | 1 = 정책이 고름, 0 = lock 강제 |
-| 팀: `pub` `prev_msg` `reach` `dec_rank` `time` `state` | (N,3) (N,6) (N,N) (N,) (1,) (gh,gw,5) | 이웃 공개 상태 / 이전 결정 메시지 / n-hop 연결 / 디코딩 순서 / t/t_max / critic 전용 |
-
-정규화: 위치 = 월드 좌표 / 맵 크기 (원점 = 맵 중앙, 대략 [−0.5, 0.5]), 시간·거리·잔여 골든타임 = / t_max, 용량 = / c_max.
-grid 5채널 = obstacle / explored / frontier / target / agents(자기 1.0, 통신 이웃 0.5). primitive 는 이 중
-`local_channels` 로 고른 채널만 받고(yaml / main.py 에서 이름 목록으로 넣고 뺌), waypoint 채널은 항상 붙는다.
-critic state 는 5채널 전부.
-
-## 맵 / 조난자 생성 (`env/map_gen.py`)
-
-- `map_mode: random` 이면 **매 에피소드 장애물 맵을 새로 생성**: 랜덤 직사각형(건물/비행금지구역)을 `obstacle_ratio`
-  (기본 20 ~ 30%) 까지 놓고 → depot 주변 비움 → depot 에서 flood fill(UAV 이동 규칙과 동일) 로 **갈 수 없는 빈 칸은 장애물로 메움**
-  → 비율이 범위 안이면 채택, 아니면 재생성. 따라서 갇힌 영역 / 도달 불가 조난자가 생기지 않는다.
-- `target_mode: random` 이면 매 에피소드 조난자 수(`num_targets`, 예: [10, 20]) 와 위치를 새로 뽑는다 (depot 에서 도달 가능한 칸만).
-  골든타임은 항상 `target_golden_time` 범위에서 매 에피소드 새로.
-- depot: `depot` (월드 x, y) 를 주면 고정, 없으면 맵마다 랜덤.
-- 학습 중 맵 크기(`rows`, `cols`)는 고정 (critic state 크기). 테스트는 다른 크기 / UAV 수도 가능 (가중치 크기가 맵과 무관).
-- GUI: **Change Map** = 새 랜덤 맵 + 조난자, **Targets** = 조난자만 다시, **Reset** = 같은 맵/조난자 재생.
-
-## 좌표계
-
-| 이름 | 축 | 원점 | 쓰는 곳 |
-|---|---|---|---|
-| **월드 (x, y)** — `env/coords.py` | x 오른쪽 +, y 위쪽 + | 맵 중앙 셀 (`row0 = rows//2, col0 = cols//2`) | 설정(`depot`), GUI, RL 관측 위치값 |
-| **상대 (dx, dy)** | 월드와 같은 축 | UAV | `node_wp` (÷ 창 반폭) |
-| 내부 (row, col) | row 아래 +, col 오른쪽 + | 왼쪽 위 | numpy 인덱스, 맵 JSON |
+- 체크포인트는 저장 즉시 디스크에 남으므로 학습이 중간에 멈춰도 사라지지 않는다. Ctrl+C 로 멈추면 그 시점도 한 번 더 저장한다.
+- 이어서 학습: `python -m training.train --resume <체크포인트 폴더>`
+  - `RolePPO/checkpoints/` 안의 것이면 폴더를 유지하고 이어서 쓴다 (그 뒤 iteration 기록은 곡선에서 잘라냄).
+  - `best_model/...` 등 다른 곳의 것이면 `RolePPO/` 를 새로 만들어 그 지점부터 학습한다.
+- `--resume` 없이 실행하면 `RolePPO/` 는 덮어쓰지만 `best_model/` 은 그대로 남는다.
+- 모델 보기: `main.py` 의 `CHECKPOINT` 에 체크포인트 폴더 경로 (`RolePPO/checkpoints/...` 또는 `best_model/..._role/...`).
+- best 기준: 고정 seed (run_rules 와 같은 seed 15 개) · 세 head argmax 평가의 구조율 최대, 같으면 에피소드 길이가 짧은 쪽
+  (env.yaml `eval.every` / `eval.episodes`). 평가는 driver policy 로 따로 돌려 학습 rollout 에는 영향이 없다.
+- `--smoke` 는 `marl_models/RolePPO_smoke/` 에 따로 쓰고 `best_model/` 은 만들지 않는다 (`checkpoints/best/` 는 저장).
 
 ## 설치 (새 컴퓨터, Windows + Anaconda 기준)
 
@@ -102,7 +126,7 @@ pip install torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.ht
 #   GPU 를 쓰려면 (RTX 30 시리즈까지): torch==1.8.1+cu111 + yaml num_gpus: 1
 
 pip install -r requirements.txt --no-build-isolation
-python -m tests.smoke_test                                             # 설치 확인
+python -m tests.role.smoke_role_policy                                        # 설치 확인
 ```
 
 ### Windows 에서 자주 나는 문제
@@ -139,56 +163,23 @@ python -m tests.smoke_test                                             # 설치 
 
 `num_workers` 는 (CPU 코어 수 − 4) 정도, 워커 하나당 RAM 약 0.5 GB (CPU torch 기준).
 
-## 실행
+# 환경 상세
 
-```bash
-python main.py                                         # GUI (stand-in 정책, Model 버튼으로 체크포인트)
-python -m tests.smoke_test                             # 환경/BFS/모델/순차 디코딩/(ray 있으면) 분포
-python -m tests.smoke_test --trainer                   # + MultiPPOTrainer 1 iteration
-python -m tests.smoke_loss                             # GAE + loss + backward (같은 파라미터 KL = 0 확인)
-python -m tests.smoke_policy                           # ray.init 없이 Policy 생성 + learn_on_batch
-python -m training.train training/config/rescue.yaml -t 10        # 학습 (10M steps)
-python training/train.py --smoke                                  # 직접 실행도 가능 (config 기본값), 1 iteration 점검
-python -m training.evaluate <checkpoint> -n 20  [--render]
-```
+## 맵 / 조난자 생성 (`env/core/map_gen.py`)
 
-### 학습 결과 위치
+- `map_mode: random` 이면 **매 에피소드 장애물 맵을 새로 생성**: 랜덤 직사각형(건물/비행금지구역)을 `obstacle_ratio`
+  (기본 20 ~ 30%) 까지 놓고 → depot 주변 비움 → depot 에서 flood fill(UAV 이동 규칙과 동일) 로 **갈 수 없는 빈 칸은 장애물로 메움**
+  → 비율이 범위 안이면 채택, 아니면 재생성. 따라서 갇힌 영역 / 도달 불가 조난자가 생기지 않는다.
+- `target_mode: random` 이면 매 에피소드 조난자 수(`num_targets`, 예: [10, 20]) 와 위치를 새로 뽑는다 (depot 에서 도달 가능한 칸만).
+  골든타임은 항상 `target_golden_time` 범위에서 매 에피소드 새로.
+- depot: `depot` (월드 x, y) 를 주면 고정, 없으면 맵마다 랜덤.
+- 학습 중 맵 크기(`rows`, `cols`)는 고정 (critic state 크기). 테스트는 다른 크기 / UAV 수도 가능 (가중치 크기가 맵과 무관).
+- GUI: **Change Map** = 새 랜덤 맵 + 조난자, **Targets** = 조난자만 다시, **Reset** = 같은 맵/조난자 재생.
 
-```
-marl_models/
-├── MultiPPO/                          ← 새로 학습하면 덮어씀
-│   ├── checkpoints/checkpoint_XXXXXX/ ← 10 iteration 마다 저장, 전부 유지 (train.py CHECKPOINT_FREQ)
-│   ├── reward_curve.png               ← 보상·에피소드 길이·loss·entropy 곡선 (--plot-every, 기본 10 iteration)
-│   ├── progress.csv / result.json / events.out.tfevents.* / params.json
-└── best_model/
-    └── <학습 시작 시각>/                ← 학습마다 새 폴더 (덮어쓰지 않음). 그 학습에서 지금까지 가장 좋은 모델
-        ├── checkpoint_XXXXXX/
-        └── params.json / best_info.json (iteration, reward) / reward_curve.png
-```
+## 좌표계
 
-- 체크포인트는 저장 즉시 디스크에 남으므로 학습이 중간에 멈춰도 사라지지 않는다. Ctrl+C 로 멈추면 그 시점도 한 번 더 저장한다.
-- 이어서 학습: `python training/train.py --resume <체크포인트 폴더>`
-  - `MultiPPO/checkpoints/` 안의 것이면 폴더를 유지하고 이어서 쓴다 (그 뒤 iteration 기록은 곡선에서 잘라냄).
-  - `best_model/...` 등 다른 곳의 것이면 `MultiPPO/` 를 새로 만들어 그 지점부터 학습한다.
-- `--resume` 없이 실행하면 `MultiPPO/` 는 덮어쓰지만 `best_model/` 은 그대로 남는다.
-- 모델 보기: `main.py` 의 `CHECKPOINT` 에 체크포인트 폴더 경로 (`MultiPPO/checkpoints/...` 또는 `best_model/...`).
-- `--smoke` 는 `marl_models/MultiPPO_smoke/` 에 따로 쓰고 best 는 만들지 않는다.
-
-## 보상 (`env/rewards.py`, 계수 = yaml `env_config.reward`)
-
-- 할당 (양(+) 보상은 구조할 때만, 패널티는 팀 공유 + 중복 추적만 개인):
-  `r_alloc^i(t) = w_rescue·|R_t|/N_T − (w_undisc/N_T)·Σ_{j∈U_t} min(1, t/max(1, τ_j−δ)) − (w_unres/N_T)·Σ_{j∈F_t} min(1, t/max(1, τ_j))`
-  - `R_t` 이번 step 구조, `U_t` 미발견 (구조된 것만 제외, 만료 포함), `F_t` 발견했지만 미구조 (만료 포함)
-  - `τ_j` 골든타임 마감 시각 (`end_time`, 없으면 `golden_time`), `δ = discover_margin` (발견 마감을 앞당김)
-  - 시간이 지날수록 못 찾은 / 못 구한 조난자 몫 패널티가 커지고 마감 후엔 1 로 포화. 구조하면 그 몫이 즉시 사라짐
-  `− w_duplicate·1[중복 추적]` (개인, 매 step, 먼 쪽만: 더 가까운 UAV 도 같은 태스크를 쫓거나 이미 구조된 태스크를 모르고 쫓음 — 보상은 학습용이라 전지적 판정)
-- primitive (개인, 모드별): explore = `w_new_cells·|E^i_t|/(2r_s+1)²` (자기 센서로 처음 밝힌 셀, 팀이 몰랐던 셀만) /
-  rescue·return = `w_progress·(목적지 BFS 거리 감소)` / 공통 `− w_step − w_blocked·1[막힌 이동] − w_collision·1[UAV 간 충돌: 같은 칸·자리 맞바꿈, depot 제외] (+ w_team·팀 보상)`
-
-## 학습 신호 흐름 (RLlib 1.3.0)
-
-1. `env/simulation.py:_execute` → info 에 `reward_alloc`, `reward_primitive`, `alloc_valid`
-2. `training/multiagent_ppo.py:compute_gae_for_sample_batch` → 헤드별 GAE, `alloc_valid` 컬럼
-3. `ppo_surrogate_loss` → 헤드 × 에이전트별 PPO loss 합. alloc 헤드의 policy/KL/entropy 는 `alloc_valid` 마스크 평균
-4. 학습 forward 는 `SampleBatch.ACTIONS`(폭 2N, 순서 alloc | primitive)의 실제 할당으로 순차 디코딩을 재생 → rollout logit 과 일치
-   (RLlib 이 학습 시 ACTIONS 를 numpy 로 넘기므로 `models/rllib_model.py` 가 텐서로 변환 — `tests/smoke_policy.py` 가 회귀 점검)
+| 이름 | 축 | 원점 | 쓰는 곳 |
+|---|---|---|---|
+| **월드 (x, y)** — `env/core/coords.py` | x 오른쪽 +, y 위쪽 + | 맵 중앙 셀 (`row0 = rows//2, col0 = cols//2`) | 설정(`depot`), GUI, RL 관측 위치값 |
+| **상대 (dx, dy)** | 월드와 같은 축 | UAV | 노드 특징 dx, dy / waypoint (÷ 창 반폭) |
+| 내부 (row, col) | row 아래 +, col 오른쪽 + | 왼쪽 위 | numpy 인덱스, 맵 JSON |

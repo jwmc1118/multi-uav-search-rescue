@@ -1,96 +1,73 @@
 """탐색/구조 시뮬레이션 GUI 실행 진입점 (UAV, 고정 고도 2D 격자).
 
-- 아래 옵션을 코드에서 직접 바꿔 환경을 구성한다.
-- map_path 에 maps/ 아래 JSON 을 주면 그 맵(장애물/타겟)을 불러오고, None 이면 rows x cols 빈 환경.
-- 결정(통합 할당: task / explore / depot + primitive)은 기본적으로 env/stand_in_policy.py 의 임시 대체
-  정책이 구동하고, GUI의 Model 버튼으로 학습된 체크포인트를 불러오면 그 정책으로 굴러간다.
-- 아래 CHECKPOINT 에 경로를 주면 시작할 때 그 모델을 바로 불러온다. 이때 관측/행동 크기를 정하는 값
-  (MODEL_SHAPE_KEYS)은 체크포인트의 학습 config(params.json)로 자동으로 덮어쓴다.
+- 설정은 training/config/ 의 main 전용 yaml (env_main.yaml + role_main.yaml + explore_main.yaml + rescue_main.yaml,
+  학습과 같은 순서로 합침) 만 읽는다. 학습 (python -m training.train) 은 *_main 이 아닌 원본 yaml 을 읽는다.
+  GUI / 체크포인트 같은 main 전용 값은 env_main.yaml 의 main: 섹션.
+- 결정 (계층 구조: Role 선택 -> Rescue / Explore 할당 / Return -> BFS 경로 추종, env/role/simulation.py) 은 기본적으로
+  규칙 정책 (policies/role_rules.py) 이 구동하고, GUI의 Model 버튼으로 학습된 체크포인트를 불러오면 그 정책으로 굴러간다.
+- main.checkpoint 에 경로를 주면 시작할 때 그 모델을 바로 불러온다. 환경 설정 (맵, UAV 수, cluster, events, 보상 ...) 은
+  main 전용 yaml 이 우선이고, 관측 차원 / 네트워크 구조를 정하는 값이 체크포인트와 다르면 어떤 키가 다른지 알리고 멈춘다.
+  UAV 수 / 센서·통신 범위는 학습 때와 달라도 된다 (모델 파라미터가 N 과 무관).
 
-조작: Space=재생/정지, N 또는 →=한 스텝, 1~9=로봇 선택, P=관측 콘솔 출력, M=정책 토글
+조작: Space=재생/정지, N 또는 →=한 스텝, 1~9=로봇 선택, O=관측 콘솔 출력, M=정책 토글 (rules -> random -> model),
+      P 또는 B=BFS 경로 표시 토글, V=센서 / 통신 범위 표시 토글, C=덩어리 · 구간 색칠, L=할당 연결선, H=범례,
+      G=임무 할당 분석 그래프 저장 (figures/)
 """
-import json
 import os
 
-from env.simulation import RescueSimulation
+from env.role.simulation import RoleSimulation
 from gui.grid_map import GridMap
-from training.checkpoint_policy import CheckpointPolicy, find_params_json, resolve_checkpoint
+from evaluation.checkpoint_policy import CheckpointPolicy, resolve_checkpoint
+from training.config_loader import load_config, reward_settings_line
 
-# 불러올 학습 모델. None = stand-in 정책으로 시작 (GUI Model 버튼으로 나중에 불러와도 됨)
-# checkpoint_XXXXXX 폴더나 그 안의 checkpoint-XX 파일 경로 모두 가능. 예)
-#   "marl_models/MultiPPO/checkpoints/checkpoint_000200"
-#   "marl_models/best_model/2026-10-13_14-30-00/checkpoint_000180"
-CHECKPOINT = "marl_models/MultiPPO/checkpoints/checkpoint_000100"
-# CHECKPOINT = "marl_models/best_model/2026-10-13_14-30-00/checkpoint_000180"
-# CHECKPOINT = None
-
-# 모델 입력/출력 크기를 정하는 env 설정 — 체크포인트를 쓰면 학습 config 값으로 맞춘다
-MODEL_SHAPE_KEYS = ["rows", "cols", "agents", "max_targets", "state_size", "local_channels",
-                    "global_downsample", "n_hop", "max_episode_len"]
+ROOT = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(ROOT, "training", "config")
+# main 전용 yaml — 병합 순서는 학습 (training/config_loader.py DEFAULT_FILES) 과 같다
+MAIN_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env_main.yaml", "role_main.yaml", "explore_main.yaml", "rescue_main.yaml")]
 
 
-def apply_training_env_config(options, ckpt):
-    """체크포인트의 params.json 에서 MODEL_SHAPE_KEYS 를 가져와 options 를 덮어쓴다."""
-    pj = find_params_json(ckpt)
-    if pj is None:
-        raise FileNotFoundError(f"params.json 을 찾지 못함: {ckpt}")
-    with open(pj) as f:
-        train_env = json.load(f).get("env_config", {})
-    for k in MODEL_SHAPE_KEYS:
-        if k in train_env and options.get(k) != train_env[k]:
-            print(f"[main] {k}: {options.get(k)} -> {train_env[k]} (학습 config 에 맞춤)")
-            options[k] = train_env[k]
+def print_settings(cfg, env, main_cfg):
+    """시작 시 실제로 쓰는 주요 설정."""
+    agents = env.get("agents") or []
+    if env.get("map_mode") == "random":
+        map_desc = f"random {env.get('rows')} x {env.get('cols')}, obstacle_ratio {env.get('obstacle_ratio')}"
+    else:
+        map_desc = f"file {env.get('map_path')}"
+    cl = env.get("cluster") or {}
+    print(f"[main] config: {', '.join(os.path.relpath(p, ROOT) for p in MAIN_FILES)}")
+    print(f"[main] UAV {len(agents)} 대 {agents[:1]}{' ...' if len(agents) > 1 else ''}, n_hop {env.get('n_hop')}, "
+          f"capacity {env.get('capacity')}")
+    print(f"[main] map: {map_desc}, depot {env.get('depot')}, targets {env.get('num_targets')} "
+          f"(golden {env.get('target_golden_time')}, {env.get('deadline_mode')}), max_episode_len {env.get('max_episode_len')}")
+    print(f"[main] cluster: eps {cl.get('eps')}, min_samples {cl.get('min_samples')}, k_max {cl.get('k_max')}")
+    print(f"[main] events: {env.get('events')}")
+    print(reward_settings_line(cfg, "main"))
+    print(f"[main] policy_mode: {env.get('policy_mode')}, explore_sub_mode: {env.get('explore_sub_mode')}")
+    print(f"[main] checkpoint: {main_cfg.get('checkpoint') or 'None (rules)'}  (model_mode {main_cfg.get('model_mode')})")
 
 
 def main():
-    options = {
-        # ---- 맵 ----
-        "map_mode": "random",      # random: 랜덤 장애물 맵으로 시작 (GUI 'Change Map' 으로 계속 새로 생성)
-                                   # file  : map_path 의 맵 (None 이면 빈 환경 — 직접 그리기)
-        "map_path": None,          # None 이면 아래 rows/cols 로 빈 환경 생성
-        "rows": 40,                # 맵 세로 칸 수 (map_path 없을 때 / random 맵)
-        "cols": 60,                # 맵 가로 칸 수 (map_path 없을 때 / random 맵)
-        "obstacle_ratio": [0.2, 0.3],   # random 맵 장애물 비율
-        "target_mode": "random",   # 조난자 수/위치 랜덤 (depot 에서 도달 가능한 칸만)
-        "num_targets": [10, 20],   # 조난자 수 범위
+    cfg = load_config(MAIN_FILES)
+    env = cfg["env_config"]
+    main_cfg = cfg.get("main") or {}
+    model_config = (cfg.get("model") or {}).get("custom_model_config")
+    print_settings(cfg, env, main_cfg)
 
-        # ---- 좌표계 (env/coords.py): x = 가로(오른쪽 +), y = 세로(위쪽 +), 원점 (0,0) = 맵 중앙 ----
-        #   40 x 60 맵이면 x: -30 ~ 29, y: -19 ~ 20
-        "depot": (-30, -19),       # depot = 모든 로봇의 출발/재보충 지점 (x, y). None 이면 맵 파일 값
-
-        # ---- 관측 ----
-        "state_size": 21,          # 고해상도 local 관측 창 크기 (로봇 중심, 홀수) — primitive 입력
-        "local_channels": ["obstacle", "agents"],  # primitive 입력 채널 (+ frontier / explored / target)
-        "global_downsample": 1,    # 저해상도 global 맵 축소 배율 (GUI 표시 / critic state)
-        "n_hop": 3,                # 통신 hop 수 (지식 병합 / 이웃 context / 순차 디코딩 그룹)
-
-        # ---- 에피소드 / 구호품 / 골든타임 ----
-        "max_episode_len": 400,
-        "capacity": 3,             # 로봇 1대의 구호품 용량
-        "target_golden_time": [100, 300],   # 타겟 추가 시 이 범위에서 골든타임 랜덤 샘플
-        "deadline_mode": "from_discovery",
-        "max_targets": 16,         # T: 할당 태스크 슬롯 수 (행동 = T + 2: explore, depot)
-        "lock_rescue": True,       # 태스크 선택 = 구조/만료/도달불가까지 유지
-        "lock_return": True,       # depot 선택 = 도착까지 유지
-
-        # ---- 로봇 구성 ----
-        "agents": [
-            {"sensor_range": 4, "comm_range": 8},
-            {"sensor_range": 4, "comm_range": 8},
-            {"sensor_range": 4, "comm_range": 8},
-            {"sensor_range": 4, "comm_range": 8},
-        ],
-    }
-
+    model_mode = main_cfg.get("model_mode", "greedy")
     policy = None
-    if CHECKPOINT:
-        ckpt = resolve_checkpoint(CHECKPOINT)
-        apply_training_env_config(options, ckpt)
-        policy = CheckpointPolicy(ckpt, env_config={"map_path": options.get("map_path")})
-        print(f"[main] model loaded: {ckpt}")
-
-    sim = RescueSimulation(options)
-    GridMap(sim, cell_size=22, model_policy=policy).run()
+    if main_cfg.get("checkpoint"):                           # 체크포인트 -> 학습 모델로 시작 (null 이면 규칙 정책)
+        ckpt = resolve_checkpoint(os.path.join(ROOT, main_cfg["checkpoint"]))
+        try:
+            policy = CheckpointPolicy(ckpt, env_config=env, mode=model_mode, model_config=model_config, env_priority=True)
+            print(f"[main] model loaded: {ckpt}  ({policy.describe()})")
+        except RuntimeError as e:                            # 관측 차원 / 네트워크 구조가 다른 체크포인트
+            raise SystemExit(f"[main] 모델 로드 실패\n{e}")
+    GridMap(RoleSimulation(env), cell_size=int(main_cfg.get("cell_size", 21)), model_policy=policy, model_mode=model_mode,
+            figures_dir=os.path.join(ROOT, main_cfg.get("figures_dir", "figures")),
+            auto_save_plots=bool(main_cfg.get("auto_save_plots", False)),
+            obs_panel_width=int(main_cfg.get("inspector_width", 560)), font_size=int(main_cfg.get("font_size", 17)),
+            fps=int(main_cfg.get("fps", 60)), speed_index=int(main_cfg.get("speed_index", 2)),
+            model_config=model_config).run()
 
 
 if __name__ == "__main__":
