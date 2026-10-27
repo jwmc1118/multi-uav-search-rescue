@@ -1,8 +1,8 @@
 # Rescue 정책 설정 — 생존자 할당: 학습 / 규칙, rescue 보상 weight, 네트워크
-# (env/role/simulation.py, policies/role_rules.py rule_rescue (담당 후보 / EDF), models/role/net.py rescue decoder)
+# (env/role/simulation.py, policies/role_rules.py rule_rescue (담당 후보 / EDF), models/role/net.py 생존자 할당 네트워크)
 # 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml)
 env_config:
-  policy_mode: {rescue: rule}    # Rescue 헤드: learned = 학습 / rule = 그리디 (이벤트 1 / 2: 담당 후보 생존자,
+  policy_mode: {rescue: learned}    # Rescue 헤드: learned = 학습 / rule = 그리디 (이벤트 1 / 2: 담당 후보 생존자,
                                     #   이벤트 3 / 4 / 5: EDF = 마감 빠른 순 -> 가까운 순 -> 번호)
 
   # ---- 보상 (env/role/simulation.py _rescue_event_reward, 이벤트 끝 그룹 공동 보상 S - F) ----
@@ -19,14 +19,15 @@ env_config:
       w_c: 0.5   # 보너스 (F = 0) = (1 − w_c) e^{−d} + w_c · (옵션 동안 개인 연결도 평균)
       w_dup: 0.05
 
-# ---- 네트워크 (models/role/net.py): 공유 이종 그래프 GNN (env.yaml model.gnn) 의 S 노드 임베딩 + rescue decoder
-#   후보 = S 노드 앞쪽 (할당 가능 생존자), Q = W_q [q_ctx ‖ mean(후보 S)] -> MHA glimpse -> tanh clip pointer
+# ---- 네트워크 (models/role/net.py): 생존자 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정)
+#   노드 U (그룹의 RESCUE UAV, 이번 이벤트 앞 차례 포함) · S, 관계 S→U, U→S, U→U, S→S, U–S 간선 층마다 갱신
+#   CapAM decoder: query = W_c [h_i^L ‖ t / T], 후보 F_j = Linear([h_{s_j}^L ‖ e_ij^L]) (후보 = S 노드 앞쪽, 할당 가능)
 #   마스크 = 할당 가능 (발견 · 미구조 · 미만료 · 마감 전 도달 가능 · 그룹의 다른 UAV 가 안 맡음) & 그룹 앞 순서가 안 고름
 #   (같은 생존자를 더 가까운 그룹원이 쫓는 경우는 마스크가 아니라 목표 무효 (이벤트 5) 로 처리)
 model:
   custom_model_config:
     rescue:
-      n_heads: 8                # decoder MHA 헤드 수 (glimpse)
+      n_heads: 8                # CapAM decoder MHA 헤드 수 (glimpse)
       clip: 10.0                # pointer 점수 tanh clip 상수 C
       entropy_coeff: 0.01       # 이 헤드 엔트로피 보너스 계수
       value_norm: true          # 이 헤드 critic ValueNorm (MAPPO)

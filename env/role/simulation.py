@@ -78,7 +78,7 @@ from env.core.base_sim import BaseSimulation
 from env.core.targets import deadline as _deadline
 from env.core.step_context import StepContext
 from env.core.agent import Robot
-from env.role.explore import ExploreMixin, EXPLORE_DEFAULTS, n_seg_slots, seg_offset
+from env.role.explore import ExploreMixin, EXPLORE_DEFAULTS, n_seg_slots
 from policies.role_rules import RuleDecider, rule_explore, rule_explore_sub, rule_rescue, rule_role
 
 ROLES = (Mode.EXPLORE, Mode.RESCUE, Mode.RETURN)      # role 행동 인덱스 = Mode.value
@@ -105,7 +105,6 @@ EVENTS_DEFAULTS = {
 }
 HEADS = ("role", "rescue", "explore")
 POLICY_MODE_DEFAULT = {h: "learned" for h in HEADS}   # env_config["policy_mode"]: 헤드별 rule | learned
-SUB_MODES = ("learned", "hungarian")                   # env_config["explore_sub_mode"]: 2 단계 정책
 CLUSTER_DEFAULTS = {
     "eps": 1.5,                # DBSCAN 이웃 반경 (1.5 = 8-연결)
     "min_samples": 3,          # core 조건 (자기 포함 이웃 수)
@@ -136,7 +135,6 @@ ROLE_GROUP_DIM = len(ROLE_GROUP_FEATURES)    # 12
 ROLE_G_RES_FEATURES = ("assignable", "min_slack")              # [할당 가능 생존자 수 / N_T, 최소 slack]
 ROLE_G_EXP_FEATURES = ("n_clusters", "frontier_cells", "psi_f_group")   # [덩어리 수 / K_max, size_feat(그룹 frontier 셀 수),
                                                                            #  그룹 belief 발견 생존자 수 / N_T]
-EXPLORE_KIND_DIM = 1           # [2 단계 learned]
 STATE_CHANNELS = 6             # critic 중앙 state: BaseSimulation 5 채널 + 목표 지점 g_l
 TEAM_CTX_DIM = 8               # 팀원 [role one-hot(3), 목표 x, y, 이번 step 결정 필요, 위치 x, y]
 CRITIC_TEAM_DIM_ROLE = 12      # 기본 critic_team 8 (BaseSimulation) + [배정 조난자 x, y, 배정 구간 medoid x, y]
@@ -176,18 +174,14 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         bad = {h: m for h, m in self.policy_mode.items() if h not in HEADS or m not in ("rule", "learned")}
         if bad:
             raise ValueError(f"policy_mode {bad} — 헤드 role / rescue / explore, 값 rule | learned")
-        self.explore_sub_mode = options.get("explore_sub_mode", "learned")
-        if self.explore_sub_mode not in SUB_MODES:
-            raise ValueError(f"explore_sub_mode={self.explore_sub_mode!r} — learned | hungarian")
+        if options.get("explore_sub_mode", "hungarian") != "hungarian":
+            raise ValueError(f"explore_sub_mode={options.get('explore_sub_mode')!r} 는 제거된 옵션 — explore 2 단계 (구간 배정) 는 "
+                             f"항상 κ Hungarian (학습 경로 없음). 이전 구조의 config / 체크포인트입니다")
+        self.explore_sub_mode = "hungarian"
         self._ruled = {h: set() for h in HEADS + ("explore_sub",)}
         self._replaced = {h: set() for h in HEADS + ("explore_sub",)}
         self.episode_tag = None                # 로그 파일 이름 꼬리 (run_rules 가 seed 로 지정)
         super().__init__(options)
-
-    @property
-    def sub_learned(self):
-        """2 단계를 학습 정책으로 고르는가 (explore 헤드 learned + explore_sub_mode learned)."""
-        return self.policy_mode["explore"] == "learned" and self.explore_sub_mode == "learned"
 
     @property
     def d_max(self):
@@ -290,6 +284,7 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
     def _explore_after_update(self, prev_state, prev_seg, prev_med=None):
         """지도 갱신 직후 explore 파이프라인 (env/role/explore.py). 반환: 구간 소진 / 도달 불가 UAV {i: 이유}."""
         self._seg_cache, self._geo_cache = {}, {}
+        self._seed_state = None                                 # rebalance 는 지금 배정자 · goal 로 warm start
         self._graph_cache, self._pair_cache, self._match_cache = {}, {}, {}
         self._split_of, self._merge_of = {}, {}
         self._build_blobs()
@@ -413,6 +408,8 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         self._prev_assign = [(a.mode, a.blob, a.cluster_medoid, a.assigned_target) for a in self.agents]
         self._match_cache = {}                                  # 구간 표 / 현재 플래그는 kind 에 따라 달라진다
         self._seg_cache = {}                                    # 구간 분할 warm start (기존 배정자 goal) 도 kind 에 따라
+        # 이번 이벤트의 구간 분할 warm start 기준 = 결정 전 배정자 · goal (1 단계로 새로 고른 UAV 는 seed 에 넣지 않는다)
+        self._seed_state = [(a.mode, a.blob, None if a.goal is None else tuple(a.goal)) for a in self.agents]
         self._obs_cache = None                                  # 결정 순서 계산용 관측 (rl_observation 이 채움)
 
     # ---------------------------------------------------------------- 결정 순서 입력 (관측 값 그대로)
@@ -433,8 +430,7 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         return {"group": torch.as_tensor(ob["group"] > 0.5)[None], "cap": torch.as_tensor(ob["team_cap"])[None], "ids": ids,
                 "valid": (ids >= 0) & (st("rescue_mask") > 0.5), "rd": own(st("us_d")), "slack": own(st("us_slack")),
                 "emask": st("explore_mask") > 0.5, "ed": own(st("uk_d")), "esize": st("explore_size"),
-                "en": torch.round(st("k_n") * self.n_agents), "useg_d": st("useg_d"), "seg_size": st("explore_seg_size"),
-                "ecur": st("explore_cur")[..., 0]}
+                "en": torch.round(st("k_n") * self.n_agents), "ecur": st("explore_cur")[..., 0]}
 
     def _collect_events(self, prev_pos, rescued_by, exhausted):
         """이벤트 3 / 4 / 5 (그 UAV 만) + 이벤트 2 (그룹 단위 -> 그룹의 EXPLORE UAV). 그룹 belief 에 처음 들어온 생존자만
@@ -688,7 +684,6 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         out, reselect = set(), set()
         M = self.n_sub_max
         st = self.ev_stats
-        X = self._order_inputs() if s1 else None
         for g, members in enumerate(self.groups):
             by = {}
             for j in members:
@@ -710,14 +705,13 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                         self._assign_segment(j, cells)
                     continue
                 segs = self.segments(g, b, kk)
-                slot = next(k for k, c in enumerate(self.clusters_of(P[0])) if c.id == bid)
-                off = seg_offset(kk)
                 n = self.n_agents
                 seg_d = torch.full((1, n, M), float("inf"))
                 seg_sz = torch.zeros(1, n, M)
-                for j in P:
-                    seg_d[0, j, :kk] = X["useg_d"][0, j, slot, off:off + kk, j]
-                    seg_sz[0, j, :kk] = X["seg_size"][0, j, slot, off:off + kk]
+                for j in P:                                         # 구간까지 BFS / d_max, 구간 셀 수 (seg_front 차례)
+                    for s_, (sc, _) in enumerate(segs):
+                        seg_d[0, j, s_] = float(np.float32(self._cells_dist(j, sc)))
+                        seg_sz[0, j, s_] = float(len(sc))
                 same = torch.zeros(1, n, n, dtype=torch.bool)
                 for j in P:
                     same[0, j, P] = True
@@ -954,10 +948,9 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                                lambda i, m: sub(self, i, m))
 
     def step_explicit(self, actions):
-        """actions = dict(role, rescue, explore, explore_sub) 각 (N,) — 결정이 필요 없는 UAV 의 값은 무시.
-        모델이 순차 디코딩한 결과를 그대로 적용. policy_mode rule 헤드 / 2 단계 hungarian 은 규칙 정책."""
-        arr = {k: np.asarray(actions.get(k, np.zeros(self.n_agents))).reshape(-1)
-               for k in ("role", "rescue", "explore", "explore_sub")}
+        """actions = dict(role, rescue, explore) 각 (N,) — 결정이 필요 없는 UAV 의 값은 무시.
+        모델이 순차 디코딩한 결과를 그대로 적용. policy_mode rule 헤드 / 2 단계 (항상 κ Hungarian) 는 규칙 정책."""
+        arr = {k: np.asarray(actions.get(k, np.zeros(self.n_agents))).reshape(-1) for k in ("role", "rescue", "explore")}
         keys = HEADS + ("explore_sub",)
         first = {h: set() for h in keys}
         self._ruled = {h: set() for h in keys}
@@ -975,21 +968,11 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         done, info = self._step_role(pick("role", rule_role, pm["role"] == "learned"),
                                      pick("rescue", rule_rescue, pm["rescue"] == "learned"),
                                      pick("explore", rule_explore, pm["explore"] == "learned"),
-                                     pick("explore_sub", rule_explore_sub, self.sub_learned))
-        # 학습 마스크: 결정을 실제로 했고 그 행동이 모델 출력 그대로 최종 실행된 경우만 1
-        # explore = 1 단계 + 2 단계 하나의 행동 — 이번 step 정책이 한 단계 중 하나라도 대체되면 0
-        for h in ("role", "rescue"):
+                                     pick("explore_sub", rule_explore_sub, False))
+        # 학습 마스크: 결정을 실제로 했고 그 행동이 모델 출력 그대로 최종 실행된 경우만 1 (explore = 1 단계만)
+        for h in HEADS:
             ok = set(first[h]) - self._ruled[h] - self._replaced[h]
             info[f"{h}_train"] = [float(info[f"{h}_valid"][i] > 0 and i in ok) for i in range(self.n_agents)]
-        e1, e2 = info["explore_valid_s1"], info["explore_valid_s2"]
-        tr = []
-        for i in range(self.n_agents):
-            l1 = e1[i] and pm["explore"] == "learned"
-            l2 = e2[i] and self.sub_learned
-            bad = (i in self._ruled["explore"] and e1[i]) or i in self._replaced["explore"] or \
-                (l2 and i in self._replaced["explore_sub"])
-            tr.append(1.0 if (l1 or l2) and not bad else 0.0)
-        info["explore_train"] = tr
         return done, info
 
     def _step_role(self, role_fn, rescue_fn, explore_fn, sub_fn):
@@ -1069,11 +1052,10 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         done = self._is_done()
         rew = self.role_rewards(rescued, expired, done,
                                 explore_active=[self.agents[i].alive and chosen_mode[i] is Mode.EXPLORE for i in range(n)],
-                                explore_new=[bool(sub_valid["explore_s1"][i] or sub_valid["explore_s2"][i]
-                                                  or sub_valid["explore_reselect"][i]) for i in range(n)])
+                                explore_new=[bool(sub_valid["explore_s1"][i]) for i in range(n)])
 
         # ---- info ----
-        exp_valid = [bool(sub_valid["explore_s1"][i] or sub_valid["explore_s2"][i]) for i in range(n)]
+        exp_valid = [bool(sub_valid["explore_s1"][i]) for i in range(n)]       # explore 결정 = 1 단계 (2 단계는 Hungarian)
         in_res = [chosen_mode[i] is Mode.RESCUE and chosen_target[i] is not None for i in range(n)]
         ev_counts = {k: sum(1 for e in events_now if k in e) for k in EVENTS}
         ev_counts["split"] = len(self._split_groups)
@@ -1485,9 +1467,33 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
             goal[c[0], c[1], 0] = 1.0
         return np.concatenate([base, _pool(goal, self.cfg["global_downsample"])], axis=-1)
 
+    def eta(self, l, d_ls, d_ds):
+        """UAV l 이 생존자 s 에 닿는 예상 시간 (step, v = 1 칸 / step — Robot.MOVES 8 방향 1 칸): 용량이 있으면 BFS(l, s),
+        용량 0 이면 depot 경유 BFS(l, depot) + BFS(depot, s) (d_ds = 그룹 depot 필드). 도달 불가면 None."""
+        if self.agents[l].capacity > 0:
+            return None if d_ls >= 10 ** 9 else float(d_ls)
+        d_ld = self._dist(l, self.depot)
+        return None if d_ld >= 10 ** 9 or d_ds < 0 else float(d_ld + d_ds)
+
+    def uav_beliefs(self):
+        """UAV 노드의 belief 요약 (UAV 마다 자기 n-hop 병합 지식):
+        team_rho  ρ = (N_T - |D_l|) / N_T  미발견 생존자 비율 (|D_l| = 발견 · l 의 지도에 있거나 구조됨을 앎)
+        team_eta  η = (|C_free| - |E_l|) / |C_free|  미탐색 비율 (|E_l| = l 이 아는 free 셀)
+        team_nu   ν = |N_l^s| / N_T  발견했지만 아직 구조되지 않은 생존자 비율 (_known_victims)."""
+        n_t = max(1, len(self.targets))
+        n_free = float(self.n_free_cells())
+        rho, eta, nu = (np.zeros(self.n_agents, np.float32) for _ in range(3))
+        for l in range(self.n_agents):
+            d_known = sum(1 for ti, t in enumerate(self.targets)
+                          if t.discovered and (self.knowledge.known_free[l][t.pos] or ti in self.beliefs.rescued[l]))
+            rho[l] = np.clip((len(self.targets) - d_known) / n_t, 0, 1)
+            eta[l] = np.clip((n_free - float(self.knowledge.known_free[l].sum())) / n_free, 0, 1)
+            nu[l] = min(1.0, len(self._known_victims(l)) / n_t)
+        return {"team_rho": rho, "team_eta": eta, "team_nu": nu}
+
     def rl_observation(self):
         """고정 shape 관측 (학습용). 키 / shape 는 env/role/gym_env.py observation space 와 같다. 그래프 사양은 env/role/graph_obs.py."""
-        n, S, K, M, P = self.n_agents, self.s_max, self.k_max, self.n_sub_max, self.n_seg_slots
+        n, S, K = self.n_agents, self.s_max, self.k_max
         t_max = float(self.cfg["max_episode_len"])
         n_t = max(1, len(self.targets))
         n_free = self.n_free_cells()
@@ -1529,9 +1535,12 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
             s_pos = np.zeros((S, 2), np.float32)
             s_tau = np.zeros(S, np.float32)
             s_held = np.zeros(S, np.float32)
+            s_elapsed = np.zeros(S, np.float32)
             us_d = np.ones((n, S), np.float32)
             us_slack = np.full((n, S), -1.0, np.float32)
+            us_sigma = np.full((n, S), -1.0, np.float32)
             ss_dist = np.ones((S, S), np.float32)
+            dfield = self.group_depot_field[g]
             for s_, ti in enumerate(s_list):
                 t = self.targets[ti]
                 tau = _deadline(t)
@@ -1539,11 +1548,16 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                 s_pos[s_] = self.frame.normalized(t.pos)
                 s_tau[s_] = float(np.clip((tau - self.time) / t_max, -1, 1))
                 s_held[s_] = float(ti in held)
+                s_elapsed[s_] = float(min(1.0, self.time / tau)) if tau > 0 else 1.0
+                d_ds = int(dfield[t.pos])                               # depot -> s BFS (그룹 지도, 도달 불가 -1)
                 for l in members:
                     d = self._dist(l, t.pos)
                     us_d[l, s_] = self._nd(d)
                     if d < 10 ** 9:
                         us_slack[l, s_] = float(np.clip((tau - self.time - d) / t_max, -1, 1))
+                    eta = self.eta(l, d, d_ds)
+                    if eta is not None and tau > 0:
+                        us_sigma[l, s_] = float(np.clip((tau - self.time - eta) / tau, -1, 1))
             if active[g] and len(s_list) > 1:
                 ss_dist[:len(s_list), :len(s_list)] = self._pair_dist(g, [self.targets[ti].pos for ti in s_list])
             r_mask = self.rescue_mask(i).astype(np.float32)                 # 후보 = S 앞쪽 (victim_slots)
@@ -1555,13 +1569,6 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
             e_kcap = np.zeros(K, np.float32)
             uk_d = np.ones((n, K), np.float32)
             kk_dist = np.ones((K, K), np.float32)
-            seg_pos = np.zeros((K, P, 2), np.float32)
-            seg_sz = np.zeros((K, P), np.float32)
-            seg_size = np.zeros((K, P), np.float32)
-            seg_mask = np.zeros((K, P), np.float32)
-            seg_dist = np.ones((K, P, M), np.float32)
-            useg_d = np.ones((K, P, n), np.float32)
-            useg_goal = np.zeros((K, P, n), np.float32)
             slots = self.clusters_of(i)
             for k, b in enumerate(slots):
                 cells = b.cell_set()
@@ -1576,19 +1583,6 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                 split = self._blob_cells_for_split(g, b)
                 for l in members:
                     uk_d[l, k] = self._cells_dist(l, split) if split else 1.0
-                for kk in range(2, cap + 1):
-                    off = seg_offset(kk)
-                    E = self.seg_edges(g, b, kk)
-                    for s_, (sc, med) in enumerate(self.segments(g, b, kk)):
-                        seg_pos[k, off + s_] = self.frame.normalized(med)
-                        seg_sz[k, off + s_] = self.size_feat(len(sc))
-                        seg_size[k, off + s_] = len(sc)
-                        seg_mask[k, off + s_] = 1.0
-                        seg_dist[k, off + s_, :kk] = E[s_]
-                        for l in members:
-                            useg_d[k, off + s_, l] = self._cells_dist(l, sc)
-                            gl = self.agents[l].goal
-                            useg_goal[k, off + s_, l] = float(gl is not None and tuple(gl) in sc)
             if active[g] and len(slots) > 1:                      # 덩어리 간 가장 가까운 셀 BFS (kNN · 간선)
                 kk_dist = self.blob_edges(g)
             agents_obs.append({
@@ -1597,15 +1591,12 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                 "role_g_res": g_res, "role_g_exp": g_exp,
                 "role_mask": self.role_mask(i).astype(np.float32),
                 "role_needed": np.array([float(self.kind[i] == "role")], np.float32),
-                "s_ids": s_ids, "s_pos": s_pos, "s_tau": s_tau, "s_held": s_held, "rescue_mask": r_mask,
-                "us_d": us_d, "us_slack": us_slack, "ss_dist": ss_dist,
+                "s_ids": s_ids, "s_pos": s_pos, "s_tau": s_tau, "s_held": s_held, "s_elapsed": s_elapsed,
+                "rescue_mask": r_mask, "us_d": us_d, "us_slack": us_slack, "us_sigma": us_sigma, "ss_dist": ss_dist,
                 "k_pos": k_pos, "k_size": k_size, "k_n": k_n, "uk_d": uk_d, "kk_dist": kk_dist,
                 "explore_mask": self.explore_mask(i).astype(np.float32),
                 "explore_cur": np.array([float(self.slot_of(i))], np.float32),
                 "explore_kcap": e_kcap, "explore_size": e_size,
-                "explore_kind": np.array([float(self.sub_learned)], np.float32),
-                "seg_pos": seg_pos, "seg_sz": seg_sz, "useg_d": useg_d, "useg_goal": useg_goal,
-                "explore_seg_mask": seg_mask, "explore_seg_size": seg_size, "explore_seg_dist": seg_dist,
             })
         team = np.zeros((n, TEAM_CTX_DIM), np.float32)
         gpos = np.zeros((n, 2), np.float32)
@@ -1629,6 +1620,7 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
             "team_slot": np.array([self.slot_of(j) for j in range(n)], np.float32),
             "team_gpos": gpos, "team_has_goal": has_goal,
             "team_depot_d": np.array([self._nd(self._dist(j, self.depot)) for j in range(n)], np.float32),
+            **self.uav_beliefs(),
             "depot_pos": np.asarray(self.frame.normalized(self.depot), np.float32),
             "geo": np.array([self.cols, self.rows, self.d_max], np.float32),
             "adj": self.knowledge.adjacency.astype(np.float32),

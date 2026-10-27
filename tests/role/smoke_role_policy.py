@@ -4,7 +4,7 @@
 
 1) policy_mode 4 조합 x (rollout -> 헤드별 GAE -> learn_on_batch 2 회): NaN 없음, 헤드별 stats 키, rule 헤드는 마스크 0
 2) 학습 재생: SampleBatch.ACTIONS 로 순차 디코딩을 재생한 logits = rollout logits (결정한 헤드 / 에이전트에서)
-   + 모델이 계산한 explore 1 단계 / 2 단계 결정 (s1 / s2d) = env 가 실제로 한 결정 (explore_valid_s1 / s2), 마스크 위반 0
+   + 모델이 계산한 explore 1 단계 결정 (s1) = env 가 실제로 한 결정 (explore_valid_s1), 마스크 위반 0
 3) 모델 파라미터가 N 과 무관 (N=4 / N=5 state_dict shape 동일), N=4 가중치를 N=5 모델에 실어 한 에피소드 실행
 4) 헤드별 파라미터 수
 """
@@ -26,9 +26,8 @@ COMBOS = [("rule", "rule", "rule"), ("learned", "rule", "rule"), ("learned", "le
           ("learned", "learned", "learned")]
 HEAD_KEYS = [f"{s}_{h}" for h in ("role", "rescue", "explore")
              for s in ("vf_explained_var", "policy_loss", "vf_loss", "entropy", "kl", "n_decisions",
-                       "value_target_mean", "value_target_std", "value_norm_mean")] + \
-    ["n_decisions_explore_s1", "n_decisions_explore_s2"]
-ACT_ORDER = ("explore", "explore_sub", "rescue", "role")
+                       "value_target_mean", "value_target_std", "value_norm_mean")]
+ACT_ORDER = ("explore", "rescue", "role")
 
 
 def base_config(n_agents=None, mode=None):
@@ -58,24 +57,20 @@ def collect(env, prep, policy, seed=0):
     obs = env.reset()
     rows = {k: [] for k in ("obs", "new_obs", "actions", "rewards", "dones", "infos", "logits")}
     extras = []
-    mism = {"s1": 0, "s2": 0, "steps": 0, "s1_n": 0, "s2_n": 0}
+    mism = {"s1": 0, "steps": 0, "s1_n": 0}
     N = env.n_agents
     for t in range(STEPS):
         ob = prep.transform(obs)
         actions, _, extra = policy.compute_actions(ob[None], explore=True)
         act = {k: [int(np.asarray(a)[0]) for a in v] for k, v in actions.items()}
-        flags = np.asarray(extra["action_dist_inputs"])[0][-2 * N:]
         st = policy.model.last_out["stage"]
         s1_m = st["s1"][0].cpu().numpy()
-        part_m = st["s2d"][0].cpu().numpy()
         nobs, r, done, info = env.step(act)
         mode = env.sim.policy_mode
         if mode["role"] == "learned" and mode["explore"] == "learned":   # 모델 = env 결정 경로가 같아야 하는 조합
             mism["steps"] += 1
             mism["s1"] += int(np.any(s1_m != (np.asarray(info["explore_valid_s1"]) > 0)))
-            mism["s2"] += int(np.any(part_m != (np.asarray(info["explore_valid_s2"]) > 0)))
             mism["s1_n"] += int(np.sum(info["explore_valid_s1"]))
-            mism["s2_n"] += int(np.sum(info["explore_valid_s2"]))
             assert info["mask_violations"] == 0, (t, info["mask_violations"])
         rows["obs"].append(ob); rows["new_obs"].append(prep.transform(nobs))
         rows["actions"].append(np.concatenate([np.asarray(act[k], np.float32) for k in ACT_ORDER]))
@@ -97,21 +92,17 @@ def collect(env, prep, policy, seed=0):
 def check_replay(policy, batch):
     """학습 forward (ACTIONS 로 재생) 의 logits 가 rollout 때 저장된 logits 와 같은지 (결정한 헤드 · 에이전트에서)."""
     m = policy.model
-    N, T, K, M = m.n_agents, m.max_targets, m.k_max, m.n_sub
+    N, T, K = m.n_agents, m.max_targets, m.k_max
     t = policy._lazy_tensor_dict(batch.copy())
     with torch.no_grad():
         lg, _ = m.from_batch(t, is_training=True)
     lg = lg.cpu().numpy()
     prev = np.asarray(batch[SampleBatch.ACTION_DIST_INPUTS])
-    o = [0, N * K, N * K + N * M, N * K + N * M + N * T, N * K + N * M + N * T + N * 3]
-    seg = {"explore": (o[0], o[1], K, "explore"), "explore_sub": (o[1], o[2], M, "explore"),
-           "rescue": (o[2], o[3], T, "rescue"), "role": (o[3], o[4], 3, "role")}
-    s2 = prev[:, -N:] > 0.5
+    o = [0, N * K, N * K + N * T, N * K + N * T + N * 3]
+    seg = {"explore": (o[0], o[1], K), "rescue": (o[1], o[2], T), "role": (o[2], o[3], 3)}
     worst = 0.0
-    for h, (a, b, w, head) in seg.items():
-        mask = np.asarray(batch[f"{head}_train_mask"]) > 0
-        if h == "explore_sub":
-            mask = mask & s2
+    for h, (a, b, w) in seg.items():
+        mask = np.asarray(batch[f"{h}_train_mask"]) > 0
         x, y = lg[:, a:b].reshape(-1, N, w), prev[:, a:b].reshape(-1, N, w)
         if mask.any():
             worst = max(worst, float(np.abs(x[mask] - y[mask]).max()))
@@ -141,9 +132,8 @@ def check_combos():
         assert not bad, (mode, bad)
         mm = collect.mismatch
         if mm["steps"]:
-            assert mm["s1"] == 0 and mm["s2"] == 0, f"모델 / env explore 단계 불일치 {mm}"
-        print(f"    explore stage check: steps {mm['steps']}, s1 {mm['s1_n']} s2 {mm['s2_n']} decisions, mismatched steps "
-              f"s1 {mm['s1']} / s2 {mm['s2']}")
+            assert mm["s1"] == 0, f"모델 / env explore 1 단계 불일치 {mm}"
+        print(f"    explore stage check: steps {mm['steps']}, s1 {mm['s1_n']} decisions, mismatched steps s1 {mm['s1']}")
         print(f"[1] {mode}: decisions {dec}  total_loss {float(ls['total_loss']):.4f}  "
               f"ev role/res/exp {float(ls['vf_explained_var_role']):+.2f}/{float(ls['vf_explained_var_rescue']):+.2f}/"
               f"{float(ls['vf_explained_var_explore']):+.2f}  replay max|Δlogit| {err:.1e}")

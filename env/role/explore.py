@@ -283,7 +283,7 @@ class ExploreMixin:
                     self._geo_cache[key] = geodesic_matrix(cells)
                 D = self._geo_cache[key]
                 index = {c: n for n, c in enumerate(cells)}
-                warm = self._goal_seeds(g, cells, P, prev_med)       # warm start: 각자의 goal 셀에 가장 가까운 셀
+                warm = self._goal_seeds(g, cells, P, fallback=prev_med)       # warm start: 각자의 goal 셀에 가장 가까운 셀
                 k = min(len(P), len(cells))
                 labels, meds = kmedoids(D, k, iters, init=[index[c] for c in warm.values()])
                 labels = contiguous_labels(cells, labels, meds)
@@ -427,7 +427,7 @@ class ExploreMixin:
             if dkey not in self._geo_cache:
                 self._geo_cache[dkey] = geodesic_matrix(cells) if len(cells) > 1 else None
             D = self._geo_cache[dkey]
-            seeds = list(self._goal_seeds(g, cells, self._keepers(g, b)).values()) if kk >= 2 else []
+            seeds = list(self._goal_seeds(g, cells, *self._seed_keepers(g, b)).values()) if kk >= 2 else []
             segs = partition(cells, kk, D, int(self.explore_cfg["kmedoids_iters"]), init=seeds) if kk >= 2 \
                 else [(tuple(cells), medoid(cells))]
             self._seg_cache[key] = segs
@@ -487,13 +487,23 @@ class ExploreMixin:
         """덩어리 b 의 지금 배정자 (EXPLORE, 소속 b) — 구간 분할 warm start (각자의 goal 근처 셀) 기준."""
         return [j for j in self.groups[g] if self.agents[j].mode is Mode.EXPLORE and self.agents[j].blob == b.id]
 
-    def _goal_seeds(self, g, cells, uavs, fallback=None):
+    def _seed_keepers(self, g, b):
+        """구간 분할 warm start 의 (배정자, {배정자: goal}). 결정 이벤트 중이면 결정 전 스냅샷 (sim._seed_state) — 이번 이벤트에
+        1 단계로 새로 고른 UAV 는 seed 에 넣지 않는다. 아니면 지금 배정자 · goal."""
+        snap = getattr(self, "_seed_state", None)
+        if snap is None:
+            return self._keepers(g, b), None
+        uavs = [j for j in self.groups[g] if snap[j][0] is Mode.EXPLORE and snap[j][1] == b.id]
+        return uavs, {j: snap[j][2] for j in uavs}
+
+    def _goal_seeds(self, g, cells, uavs, goals=None, fallback=None):
         """{UAV: cells 중 그 UAV goal 셀에 측지 (그룹 지도 BFS) 거리 가장 가까운 셀} — k-medoids warm start 용, 셀 중복 없음.
-        goal 이 없으면 fallback[UAV] (예: 직전 구간 medoid) 기준, 그것도 없으면 빠진다."""
+        goals 를 주면 그 goal (스냅샷) 을, 아니면 지금 goal 을 쓴다. goal 이 없으면 fallback[UAV] (예: 직전 구간 medoid) 기준,
+        그것도 없으면 빠진다."""
         index = {c: n for n, c in enumerate(cells)}
         out, taken = {}, set()
         for l in uavs:
-            ref = self.agents[l].goal
+            ref = goals[l] if goals is not None else self.agents[l].goal
             if ref is None and fallback is not None:
                 ref = fallback[l]
             if ref is None:

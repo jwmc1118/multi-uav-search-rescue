@@ -1,9 +1,11 @@
 # Multi-UAV Search & Rescue RL
 
-계층 구조 결정: Role 선택 (Explore / Rescue / Return) → Rescue 할당 (조난자) / Explore 2 단계 (frontier DBSCAN 덩어리 선택 →
-같은 덩어리를 m 대가 맡으면 측지 k-medoids 구간 분할 → 구간 선택) → BFS 경로 추종.
-세 정책 (role / rescue / explore) 은 각각 학습 (3 헤드 MAPPO) 또는 규칙 정책으로 고를 수 있다 (yaml `policy_mode`).
-덩어리 · 구간 생성 (DBSCAN, k-medoids) 은 env 가 하므로 학습 / 규칙 어느 쪽이든 같다.
+계층 구조 결정: Role 선택 (Explore / Rescue / Return) → Rescue 할당 (조난자) / Explore (frontier DBSCAN 덩어리 선택 →
+같은 덩어리를 m 대가 맡으면 측지 k-medoids 구간 분할 → κ Hungarian 구간 배정) → BFS 경로 추종. Return 목표 = depot.
+세 결정 (역할 선택 / 생존자 할당 / frontier 덩어리 선택) 은 각각 독립된 네트워크 (encoder · 이종 그래프 GNN 공유 없음,
+attention 집계) 로 학습 (3 헤드 MAPPO) 하거나 규칙 정책으로 고를 수 있다 (yaml `policy_mode`). 정보 구조는 belief:
+UAV 는 자기 n-hop 통신 그룹의 병합 지식으로 그룹 그래프를 만들고 GNN 은 그 위에서 로컬로 계산한다.
+덩어리 · 구간 생성 (DBSCAN, k-medoids) 과 구간 배정 (Hungarian) 은 env 가 하므로 학습 / 규칙 어느 쪽이든 같다.
 
 참고 논문: `paper/` (저작권 때문에 git 에는 안 올림). `docs/research_pipeline_summary.md`, `docs/Framework.png` 는 초기 3계층 설계 기록.
 모든 명령은 **레포 루트에서** 실행한다 (패키지 import 기준점).
@@ -18,17 +20,18 @@ env/                            시뮬레이터 — 학습 / 정책과 무관
 │                               knowledge (센싱 · n-hop 지도 병합) · beliefs · modes · coords · step_context
 └── role/                       simulation (RoleSimulation: 역할 마스크 (부분 귀환) · Role 이벤트 1~6 · 결정 순서 · 보상 · 관측 · 이벤트 로그) ·
                                 explore (덩어리 대응 · 쪼개짐 / 합쳐짐 · 구간 rebalance · 2 단계 유지 UAV 매칭 · 노드 특징 / 간선) ·
-                                graph_obs (이종 그래프 관측 사양: 노드 U / S / K / D, 간선 특징) ·
+                                graph_obs (이종 그래프 관측 사양: 노드 U / S / K, 간선 U–U / U–S / U–K / S–S / K–K) ·
                                 connectivity (연결성 C = 연결된 쌍 비율 — rescue 보너스 목표 그래프, 실제 위치는 진단 로그) ·
                                 clusters (frontier DBSCAN · 측지 k-medoids) · gym_env (RoleEnv)
 policies/                       규칙 정책 (학습 없음)
-└── role_rules.py               rule_role / rule_rescue (EDF) / rule_explore (덩어리) / rule_explore_sub (구간, hungarian),
+└── role_rules.py               rule_role / rule_rescue (EDF) / rule_explore (덩어리) / rule_explore_sub (구간, κ Hungarian — env 2 단계 고정),
                                 RuleDecider, RandomDecider
 models/                         신경망 (순수 torch + RLlib 래퍼)
-├── capam.py                    CapAM decoder (MHA glimpse + tanh clip pointer) — 세 head 공통 구조 (head 마다 인스턴스)
+├── capam.py                    CapAM decoder (MHA glimpse + tanh clip pointer) — 생존자 / frontier 할당 네트워크가 각자 사용
 ├── common/                     attention · encoders (CNN / MLP) · value_norm · critic (CTDE critic, 헤드마다 하나)
-└── role/                       gnn (HeteroGNN: 이종 그래프 메시지 전달, 세 head 공유) · net (RoleNet: 순차 디코딩, 결정마다 그래프 구성 —
-                                role = 역할 노드 3 개 / rescue = S 노드 / explore = 영역 · 구간 K 노드, critic ×3) · rllib_model
+└── role/                       gnn (HeteroGNN: 2 층 MLP encoder, 관계별 multi-head attention 집계 | mean_max, 선택적 간선 갱신) ·
+                                net (RoleNet: 독립 네트워크 3 개 — 역할 선택 (MLP 분류) / 생존자 할당 (CapAM) / frontier
+                                할당 (CapAM, 1 단계만), 순차 디코딩 · 결정마다 그래프 재구성, critic ×3) · rllib_model
 training/                       학습
 ├── train.py                    학습 엔트리포인트
 ├── config/                     env.yaml (환경 + 학습 공통) · role.yaml · explore.yaml · rescue.yaml (정책별: 학습/규칙 · 이벤트 · 보상 weight · 네트워크)
@@ -78,7 +81,7 @@ python -m tests.role.test_role_env
 python -m tests.role.test_explore                         # explore 2 단계 (구간 분할 / 추적 / rebalance)
 python -m tests.role.test_events                          # 이벤트 체계 (Role 1~6, 쪼개짐 / 합쳐짐, 이벤트 5 간격)
 python -m tests.role.test_return_mask                     # 부분 귀환 역할 마스크
-python -m tests.role.test_gnn                             # 그래프 구성 · 순열 불변 · 패딩 · 2-hop · GNN 공유 / gradient · 연결성 · 보상
+python -m tests.role.test_gnn                             # 그래프 구성 (ρ / η / ν, ETA σ, 목표 중복) · attention 순열 불변 · 패딩 · 2-hop · 네트워크 독립 / gradient · 연결성 · 보상
 python -m tests.role.test_rewards                         # 보상: rescue S - F / U_ε, explore 커버리지 · 옵션 return, 중복 추적, 역할 진동, EXPLORE 마스크, C_pair
 python -m tests.role.test_config                          # yaml: 학습용 = *_main key 구조, 깊은 병합, 보상 키
 python -m tests.role.test_gui_style                       # GUI 스타일 표 (하드코딩 색 없음, 범례 = 그린 요소)

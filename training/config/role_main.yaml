@@ -1,6 +1,6 @@
 # main.py 전용 설정 (학습은 role.yaml 을 사용)
 # Role 정책 설정 — 역할 선택 (EXPLORE / RESCUE / RETURN): 학습 / 규칙, 역할 결정 · Role 이벤트, role 보상 weight, 네트워크
-# (env/role/simulation.py, policies/role_rules.py rule_role, models/role/net.py — 공유 이종 그래프 GNN + role decoder)
+# (env/role/simulation.py, policies/role_rules.py rule_role, models/role/net.py 역할 선택 네트워크)
 # 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml)
 env_config:
   # ---- 헤드별 정책: learned = 학습 / rule = 규칙 정책 (policies/role_rules.py, 그 헤드는 loss · critic 에서 제외) ----
@@ -30,8 +30,9 @@ env_config:
   #    이후 그 그룹은 역할 마스크에서 EXPLORE 금지 — 그리디는 할당 가능 생존자 -> RESCUE, 없으면 RETURN)
   # 결정 순서 (policies/decision_order.py, 그리디 / 학습 공통, 한 대가 결정할 때마다 남은 대상으로 다시 계산):
   #   role 차례 = 여유 시간 σ 가 작은 생존자부터 가장 가까운 UAV (닿는 UAV 가 없으면 가까운 생존자 거리 -> 용량 -> 번호),
+  #   RESCUE 를 고르면 바로 생존자 할당 (다음 role 차례는 그 선택을 반영해 다시 계산),
   #   1 단계 차례 = 배정 0 덩어리를 크기 순으로 가장 가까운 UAV, 그다음 몫 최대 덩어리,
-  #   2 단계 차례 = 남은 가장 큰 구간에 가장 가까운 참여자 (참여자 = 그 덩어리를 고른 UAV + 기존 배정자)
+  #   2 단계 = 그 덩어리를 고른 UAV + 기존 배정자를 κ Hungarian 으로 구간 배정 (env, 학습 없음)
   # 덩어리 쪼개짐 / 합쳐짐은 재결정 없이 소속만 이어 붙인다
   events:
     goal_latch: true            # explore 목표 셀 유지: 관측되어 frontier 가 아님 / 도달 불가 / 내 구간 밖 N step 일 때만 변경
@@ -52,18 +53,12 @@ env_config:
       osc_window: 10            # 진동 판정 창 W (step) — 역할 진동 penalty 와 목표 진동 로그 (A -> B -> A) 공통
       terminal_unrescued_as_expired: true   # 에피소드가 끝날 때 아직 구조되지 않은 생존자 = 마지막 step 의 만료 X
 
-# ---- 네트워크 (models/role/net.py): 공유 이종 그래프 GNN (env.yaml model.gnn) -> 역할 노드 3 개 decoder
-#   q_ctx = W_c [h_self ‖ t / T]
-#   h_RES = W_r [mean ‖ max (할당 가능 S 임베딩) ‖ g_res],  g_res = [할당 가능 수 / N_T, 최소 slack]
-#   h_EXP = W_e [mean ‖ max (고를 수 있는 K 임베딩) ‖ g_exp],  g_exp = [덩어리 수 / K_max, size_feat(frontier 셀 수),
-#     ψ^{f,G} = 그룹 belief 발견 생존자 수 / N_T]
-#   h_RET = W_t h_D (depot 노드 임베딩).  Q = W_q [q_ctx ‖ mean(H)] -> MHA glimpse -> tanh clip pointer
-#   GNN 은 세 head 가 공유 (세 헤드 loss 가 함께 학습)
+# ---- 네트워크 (models/role/net.py): 역할 선택 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정)
+#   노드 U (그룹 전체) · S, 관계 S→U, U→S, U→U, S→S, attention 집계
+#   z_i = MLP([h_i^L ‖ h_i^0]) ∈ R^3 (h_i^0 = encoder 출력 skip) -> role_mask -> softmax. RETURN 의 목표 = depot (네트워크 없음)
 model:
   custom_model_config:
     role:
-      n_heads: 8                # decoder MHA 헤드 수 (glimpse)
-      clip: 10.0                # pointer 점수 tanh clip 상수 C
       entropy_coeff: 0.01       # 이 헤드 엔트로피 보너스 계수
       value_norm: true          # 이 헤드 critic ValueNorm (MAPPO)
       critic:                     # role 헤드 critic (CTDE rich critic, actor 와 인코더 비공유)

@@ -368,23 +368,17 @@ def check_model_order(steps=150):
             obs, _, done, info = env.step(act)
             sim = env.sim
             assert info["mask_violations"] == 0
-            for stage in ("role", "s1", "s2"):
+            for stage in ("role", "s1"):                                 # 2 단계는 env 의 Hungarian (모델 결정 아님)
                 seq = [j for s, j in sim.last_decision_seq if s == stage]
                 model = [j for j in range(N) if rank[stage][j] > 0]
                 assert sorted(seq) == sorted(model), (t, stage, seq, rank[stage])
-                # role / 1 단계: env 는 iteration 마다 (그룹별 차례 하나씩) 처리 -> env 순서의 rank 가 감소하면 안 됨
-                # 2 단계: env 는 덩어리별로 차례대로, 모델은 덩어리들을 나란히 -> 같은 덩어리 안에서만 비교
-                key = (lambda j: sim.last_s2_blob[j]) if stage == "s2" else (lambda j: 0)
-                for blk in {key(j) for j in seq}:
-                    sub = [j for j in seq if key(j) == blk]
-                    assert [rank[stage][j] for j in sub] == sorted(rank[stage][j] for j in sub), (t, stage, seq, rank[stage])
-                    if stage == "s2":
-                        assert [rank[stage][j] for j in sub] == list(range(1, len(sub) + 1)), (t, sub, rank[stage])
+                # env 는 iteration 마다 (그룹별 차례 하나씩) 처리 -> env 순서의 rank 가 감소하면 안 됨
+                assert [rank[stage][j] for j in seq] == sorted(rank[stage][j] for j in seq), (t, stage, seq, rank[stage])
                 n_cmp += len(seq)
             if done:
                 break
     assert n_cmp > 0
-    print(f"[11] learned rollouts: model decoding order (role / stage 1 / stage 2) == env decision order at every step "
+    print(f"[11] learned rollouts: model decoding order (role / stage 1) == env decision order at every step "
           f"({n_cmp} decisions compared), no mask violations")
 
 

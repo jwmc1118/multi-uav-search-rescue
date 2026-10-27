@@ -1,7 +1,7 @@
 """학습된 체크포인트를 GUI/평가에서 굴리기 위한 래퍼.
 
 gui/grid_map.py (Model 버튼), main.py, evaluation/evaluate.py 가 .step(sim) 으로 쓴다: 모델이 그룹 순서대로 순차 디코딩한
-dict(role, rescue, explore, explore_sub) 를 sim.step_explicit() 로 그대로 넣는다.
+dict(role, rescue, explore) 를 sim.step_explicit() 로 그대로 넣는다 (explore 2 단계는 env 의 κ Hungarian).
 ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡아 상태메시지로 처리한다.
 
 행동 선택 방식 mode: "greedy" (기본, 세 헤드 argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
@@ -29,7 +29,7 @@ import numpy as np
 SHAPE_KEYS = ("max_targets", "s_max", "state_size", "local_channels", "global_downsample", "rows", "cols", "max_episode_len")
 # 입력 정규화 분모 — 달라도 실행은 되지만 학습 때와 입력 스케일이 달라진다 (env_priority 에서 경고)
 NORM_KEYS = ("max_episode_len", "d_max", "rows", "cols", "explore.size_ref")
-ACTOR_PREFIXES = ("net.gnn.", "net.q_ctx.", "net.dec.", "net.stage.", "net.w_r.", "net.w_e.", "net.w_t.")
+ACTOR_PREFIXES = ("net.role_net.", "net.rescue_net.", "net.explore_net.")       # 세 actor 네트워크 (critic 제외)
 MODES = ("greedy", "sample")
 
 
@@ -338,24 +338,22 @@ class CheckpointPolicy:
         return sim.step_explicit(self.act(sim))
 
     def act(self, sim):
-        """계층 구조: 모델이 그룹 순서대로 순차 디코딩한 dict(role, rescue, explore, explore_sub). UAV 별 출력은 self.last 에.
-        self.last[i] = {role_probs (3,), rescue_top / explore_top / sub_top [(슬롯, 확률)] 상위 3, value_role,
-                        s1 / s2 (이번 step explore 1 / 2 단계 결정 여부)}."""
+        """계층 구조: 모델이 그룹 순서대로 순차 디코딩한 dict(role, rescue, explore). UAV 별 출력은 self.last 에.
+        self.last[i] = {role_probs (3,), rescue_top / explore_top [(슬롯, 확률)] 상위 3, value_role,
+                        s1 (이번 step explore 1 단계 결정 여부)}."""
         import torch
         obs = sim.rl_observation()
         action, _, extra = self.trainer.compute_action(obs, explore=True, full_fetch=True)
-        out = {h: np.asarray(action[h]).reshape(-1) for h in ("role", "rescue", "explore", "explore_sub")}
+        out = {h: np.asarray(action[h]).reshape(-1) for h in ("role", "rescue", "explore")}
         model = self.trainer.get_policy().model
         lo = model.last_out
         if lo is not None:
             with torch.no_grad():
-                pr = {h: torch.softmax(lo["logits"][h][0], -1).cpu().numpy()
-                      for h in ("role", "rescue", "explore", "explore_sub")}
+                pr = {h: torch.softmax(lo["logits"][h][0], -1).cpu().numpy() for h in ("role", "rescue", "explore")}
                 vr = lo["values"]["role"][0].cpu().numpy()
-                st = {k: lo["stage"][k][0].cpu().numpy() for k in ("s1", "s2")}
+                s1 = lo["stage"]["s1"][0].cpu().numpy()
             top = lambda p: [(int(k), float(p[k])) for k in np.argsort(-p)[:3] if p[k] > 1e-4]
             self.last = [{"role_probs": pr["role"][i], "rescue_top": top(pr["rescue"][i]),
-                          "explore_top": top(pr["explore"][i]), "sub_top": top(pr["explore_sub"][i]),
-                          "s1": bool(st["s1"][i]), "s2": bool(st["s2"][i]),
+                          "explore_top": top(pr["explore"][i]), "s1": bool(s1[i]),
                           "value_role": float(vr[i])} for i in range(sim.n_agents)]
         return out

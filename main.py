@@ -42,7 +42,7 @@ def print_settings(cfg, env, main_cfg):
     print(f"[main] cluster: eps {cl.get('eps')}, min_samples {cl.get('min_samples')}, k_max {cl.get('k_max')}")
     print(f"[main] events: {env.get('events')}")
     print(reward_settings_line(cfg, "main"))
-    print(f"[main] policy_mode: {env.get('policy_mode')}, explore_sub_mode: {env.get('explore_sub_mode')}")
+    print(f"[main] policy_mode: {env.get('policy_mode')}, explore 2 단계: κ Hungarian")
     print(f"[main] checkpoint: {main_cfg.get('checkpoint') or 'None (rules)'}  (model_mode {main_cfg.get('model_mode')})")
 
 

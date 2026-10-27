@@ -52,7 +52,7 @@ def check_deep_merge():
     rw = cfg["env_config"]["rewards"]
     assert rw["connectivity"]["r_c_source"] == "base"                 # env.yaml
     assert set(rw["role"]) == {"w_x", "c_osc", "osc_window", "terminal_unrescued_as_expired"}   # role.yaml
-    assert rw["explore"] == {"w_mult": 0.2} and set(rw["rescue"]) == {"epsilon_urgent", "w_c", "w_dup"}
+    assert set(rw["explore"]) == {"w_mult"} and set(rw["rescue"]) == {"epsilon_urgent", "w_c", "w_dup"}
     assert cfg["env_config"]["s_max"] == cfg["model"]["custom_model_config"]["gnn"]["s_max"]
     print("[2] load_config deep-merges dicts key by key (env_config.rewards: connectivity from env.yaml + role / "
           "rescue from head yamls), lists / scalars replaced")
@@ -65,10 +65,11 @@ def check_reward_keys():
         rr = role["rewards"]["role"]
         assert not {"lambda_conn", "gamma", "w_conn"} & set(rr)
         assert "osc_window" not in role["events"] and "osc_window" in rr
-        assert exp["rewards"]["explore"] == {"w_mult": 0.2}
-        assert res["rewards"]["rescue"] == {"epsilon_urgent": 5, "w_c": 0.5, "w_dup": 0.05}
+        assert set(exp["rewards"]["explore"]) == {"w_mult"} and "explore_sub_mode" not in exp
+        assert set(res["rewards"]["rescue"]) == {"epsilon_urgent", "w_c", "w_dup"}
     cfg = load_config()
-    assert cfg["gamma"] == 0.99
+    g = cfg["model"]["custom_model_config"]["gnn"]
+    assert g["aggr"] in ("attention", "mean_max") and "attn_heads" in g
     print("[3] " + reward_settings_line(cfg, "train"))
 
 

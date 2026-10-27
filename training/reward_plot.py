@@ -131,7 +131,7 @@ def save_role_plot(logdir, rows, filename, baseline=None):
                                  (cm + "dup_in_mean", "dup penalty (in group)"), (cm + "dup_out_mean", "dup penalty (other group)")],
            "Overlap / conflict / duplicate pursuit")
     _lines(axes[1][3], x, rows, [(_STATS + f"grad_norm_enc_from_{k}", k) for k in ("role", "exp", "res")],
-           "Shared encoder grad norm by head (dashed = EMA)")
+           "Encoder grad norm per head network (dashed = EMA)")
     for line_ in list(axes[1][3].get_lines()):
         k = line_.get_label()
         y = _col(rows, cm + f"enc_grad_ema_{k}")
@@ -183,11 +183,10 @@ def save_role_plot(logdir, rows, filename, baseline=None):
     ax.set_title("Role events 1-5 (+ blob split / merge, no re-decision) per episode — latest iter")
     _lines(axes[3][3], x, rows, [(_STATS + f"value_target_std_{h}", h) for h in heads], "Value target std")
     # ---- explore 2 단계 ----
-    _lines(axes[4][0], x, rows, [(cm + "explore_s1_mean", "stage 1 (blob) / episode"), (cm + "explore_s2_mean", "stage 2 (segment) / episode"),
-                                 (cm + "explore_reselect_mean", "stage-2-only reselect / episode"),
-                                 (cm + "decisions_per_batch_explore_s1", "stage 1 / train batch"),
-                                 (cm + "decisions_per_batch_explore_s2", "stage 2 / train batch"),
-                                 (cm + "decisions_per_batch_explore_s2only", "stage-2-only / train batch")], "Explore decisions")
+    _lines(axes[4][0], x, rows, [(cm + "explore_s1_mean", "stage 1 (blob, policy) / episode"),
+                                 (cm + "explore_s2_mean", "stage 2 Hungarian assignments / episode"),
+                                 (cm + "explore_reselect_mean", "join re-assignments (Hungarian) / episode"),
+                                 (cm + "decisions_per_batch_explore", "explore decisions / train batch")], "Explore decisions")
     _lines(axes[4][1], x, rows, [(cm + "link_broken_mean", "link breaks"), (cm + "link_made_mean", "link makes"),
                                  (cm + "group_size_ep_mean", "mean group size"), (cm + "dec_interval_mean", "decision interval (steps)"),
                                  (cm + "latch_hold_mean", "goal latch holds")],
@@ -209,8 +208,7 @@ def save_role_plot(logdir, rows, filename, baseline=None):
         tw50.plot(x, y, color="0.3", ls=":")
         tw50.set_ylabel("option length t1 - t0 (dotted)", fontsize=8)
     _lines(axes[5][1], x, rows, [(cm + "blob_dist_ratio_mean", "(chosen blob d + 1) / (nearest blob d + 1)"),
-                                 (cm + "reselect_kept_goal_mean", "reselect: kept own-goal segment"),
-                                 (_STATS + "explore_s2only_ratio", "stage-2-only share of explore samples")],
+                                 (cm + "reselect_kept_goal_mean", "join re-assignment: kept own-goal segment")],
            "Explore blob choice / join reselect", hline=1.0)
     ax5 = axes[5][1].twinx()
     for k, lab, c in (("join_events_mean", "join events / ep", "0.3"), ("reselect_goal_change_mean", "goal changes by reselect / ep", "0.6")):

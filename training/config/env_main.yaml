@@ -43,12 +43,13 @@ model:
   custom_action_dist: role_multi_action   # training/role/action_dist.py
   custom_model_config:
     activation: relu            # 활성화 함수
-    gnn:                        # 이종 그래프 GNN encoder (models/role/gnn.py, 사양 env/role/graph_obs.py) — 세 head 공유
+    gnn:                        # 이종 그래프 GNN (models/role/gnn.py, 사양 env/role/graph_obs.py) — 세 네트워크가 같은 설정으로 각자 가짐
       embed_dim: 128            # 노드 임베딩 차원 D
-      n_layers: 2               # 메시지 전달 층 수 L (층 · 관계 · 방향마다 따로 MLP)
-      knn_k: 6                  # S–S / K–K (영역) kNN 이웃 수 (구간 K–K 는 전부 연결)
+      n_layers: 2               # 메시지 전달 층 수 L (층 · 관계 · 방향마다 파라미터 따로)
+      knn_k: 6                  # S–S / K–K kNN 이웃 수 (k 번째와 거리가 같은 이웃은 모두 포함)
       s_max: 16                 # S (생존자) 노드 수 = rescue 행동 슬롯 수 (load_config 가 env_config.s_max 로 넣음)
-      aggr: mean_max            # 관계별 이웃 집계 [mean ‖ max]
+      aggr: attention           # 관계별 이웃 집계: attention (multi-head, q = W_q h_v, k / v = W [h_u ‖ e_uv]) | mean_max (ablation)
+      attn_heads: 4             # attention 집계 head 수 (embed_dim 을 나눠야 함)
     loss:                       # L = λ_role L_role + λ_exp L_exp + λ_res L_res (training/role/ppo.py)
       lambda_role: 1.0
       lambda_exp: 0.5

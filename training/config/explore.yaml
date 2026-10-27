@@ -3,12 +3,11 @@
 # (env/role/explore.py, env/role/clusters.py, policies/role_rules.py rule_explore / rule_explore_sub, models/role/net.py)
 # 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml)
 env_config:
-  policy_mode: {explore: rule}   # Explore 헤드: learned = 학습 / rule = 그리디 (1 단계 share_rr, 2 단계 κ Hungarian)
-  explore_sub_mode: hungarian     # explore 2 단계 (구간 선택): learned = explore 정책 재사용 (학습) / hungarian = κ 합 최소 1:1 배정 (그리디)
-                                # policy_mode.explore 가 rule 이면 1 단계 = 그리디, 2 단계 = hungarian
+  policy_mode: {explore: learned}   # Explore 헤드: learned = 학습 / rule = 그리디 (1 단계 share_rr, 2 단계 κ Hungarian)
+  # explore 2 단계 (같은 덩어리 안 구간 배정) 는 항상 κ 합 최소 1:1 Hungarian (학습 없음, explore_sub_mode 옵션 제거)
   # 덩어리 쪼개짐 / 합쳐짐: 재결정 없이 소속만 이어 붙임 (쪼개짐 = 내 구간이 가장 많이 남은 조각, 합쳐짐 = 새 덩어리)
-  # 이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원이 2 단계 차례 (남은 가장 큰 구간에 가장 가까운 참여자) 로
-  #   구간을 다시 고름 (기존 배정자 = stage-2-only). 아무도 새로 고르지 않은 덩어리의 기존 배정자는 그대로
+  # 이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정 (기존 배정자의 explore
+  #   옵션은 계속). 아무도 새로 고르지 않은 덩어리의 기존 배정자는 그대로
 
   # ---- explore 클러스터 (frontier DBSCAN, env/role/clusters.py) ----
   cluster:
@@ -38,14 +37,13 @@ env_config:
     explore:
       w_mult: 0.75   # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배
 
-# ---- 네트워크 (models/role/net.py): 공유 이종 그래프 GNN (env.yaml model.gnn) 의 K 노드 임베딩 + explore decoder (1 · 2 단계 같은 가중치)
-#   1 단계 K = 영역 (kNN 간선), 2 단계 K = 고른 영역의 구간 (전부 연결, 측지 간선) 으로 그래프를 다시 만들어 GNN 재계산
-#   Q1 = W_q[q ‖ mean K ‖ 0 ‖ e_stage1], Q2 = W_q[q ‖ mean K_seg ‖ h_c ‖ e_stage2 (합류 재선택이면 e_reselect)]
-#   log π = log π1 + log π2 (stage-2-only 재선택은 log π2)
+# ---- 네트워크 (models/role/net.py): frontier 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정) — 1 단계만
+#   노드 U (그룹의 EXPLORE UAV) · K (덩어리 슬롯), 관계 K→U, U→K, U→U, K→K (kNN), attention 집계
+#   CapAM decoder: query = W_c [h_i^L ‖ t / T], 후보 F_j = Linear([h_{k_j}^L ‖ e_ij]), 마스크 = explore_mask (중복 선택 허용)
 model:
   custom_model_config:
     explore:
-      n_heads: 8                # decoder MHA 헤드 수 (glimpse)
+      n_heads: 8                # CapAM decoder MHA 헤드 수 (glimpse)
       clip: 10.0                # pointer 점수 tanh clip 상수 C
       entropy_coeff: 0.01       # 이 헤드 엔트로피 보너스 계수
       value_norm: true          # 이 헤드 critic ValueNorm (MAPPO)

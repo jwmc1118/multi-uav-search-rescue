@@ -1,11 +1,9 @@
 """RolePPOTrainer — 계층 구조 env (env/role/gym_env.py) 의 Role / Rescue / Explore 3 헤드 MAPPO (CTDE).
 
 하나의 RLlib policy (default_policy) 안의 multi-head 모델 (models/role/net.py RoleNet). 헤드 h ∈ {role, rescue, explore},
-UAV i 마다 따로 보상 / advantage / value target / critic. 공유 encoder (이종 그래프 GNN, models/role/gnn.py) 는
-세 헤드 loss 의 gradient 를 모두 받는다.
-    explore 헤드 = 1 단계 (덩어리) + 2 단계 (구간) 하나의 자기회귀 행동: logp = s1·logp1 + s2·logp2, advantage 하나
-    (training/role/action_dist.py). 합류 재선택 (기존 배정자, stage-2-only) 은 s1 = 0, s2 = 1 -> logp = logp2.
-    sample 별 (s1, s2) 는 rollout 때 ACTION_DIST_INPUTS 에 저장된 값을 loss 에서 그대로 쓴다 (현재 forward 값이 아님).
+UAV i 마다 따로 보상 / advantage / value target / critic. 헤드마다 독립된 actor 네트워크 (encoder · 이종 그래프 GNN 공유 없음,
+models/role/net.py) — 각 헤드 loss 는 자기 네트워크에만 gradient 를 준다.
+    explore 헤드 = 1 단계 (덩어리 선택) 만. 2 단계 (같은 덩어리 안 구간 배정) 는 env 의 κ Hungarian (학습 행동 아님).
     보상    info["reward_role" | "reward_rescue" | "reward_explore"]  (N,)  (env/role/simulation.py role_rewards)
     advantage — 결정 단위 (결정 step = info["{h}_valid"]):
             role   : SMDP. 결정 t0 ~ 다음 role 결정 t1:  δ(t0) = Σ_{t0 <= t < t1} γ_r^(t - t0) r(t) + γ_r^(t1 - t0) V(s_t1) - V(s_t0)
@@ -14,8 +12,8 @@ UAV i 마다 따로 보상 / advantage / value target / critic. 공유 encoder (
             rescue : 옵션 단위. 결정 t0 ~ t1 = 다음 role / rescue 결정 (구조 완료 · 이벤트 5 뒤 재결정) / 에피소드 끝:
                      R = Σ_{t0 <= t < t1} r(t) (할인 없음 — 결정 step 의 (S - F) / N_T · 중복 + 옵션 끝 step 의 개인 보너스),
                      Â = R - V(s_t0), bootstrap 없음
-            explore: 옵션 단위. 결정 t0 (1 + 2 단계 또는 stage-2-only 재선택) ~ t1 = 다음 explore 결정 (재선택 포함) /
-                     역할 변경 (info explore_active = 0) / 에피소드 끝 중 먼저:  R = Σ_{t0 <= t < t1} γ^(t - t0) r(t),
+            explore: 옵션 단위. 결정 t0 (1 단계) ~ t1 = 다음 explore 결정 / 역할 변경 (info explore_active = 0) /
+                     에피소드 끝 중 먼저 (합류로 Hungarian 이 구간을 다시 배정해도 옵션은 계속):  R = Σ_{t0 <= t < t1} γ^(t - t0) r(t),
                      Â = R - V(s_t0), bootstrap 없음 (γ = config gamma, r = 매 step 커버리지 보상)
             fragment (truncate_episodes) 끝에서 구간이 아직 안 끝난 role / rescue / explore 결정은 loss 에서 뺀다 (마스크 0) — 다음
             fragment 에서 그 뒤 결정들이 이어진다 (bootstrap 하지 않음).
@@ -26,8 +24,8 @@ UAV i 마다 따로 보상 / advantage / value target / critic. 공유 encoder (
             마스크 합이 0 이면 그 항은 0 (NaN 없음). c_e^h = 헤드별 entropy_coeff (training/config/role.yaml 등)
             grad_clip (config) 은 전체 파라미터에 한 번 (apply_grad_clipping)
     ValueNorm (헤드별): rollout 의 VF_PREDS* 와 bootstrap 은 실제 스케일, loss 는 미니배치마다 갱신 후 정규화 공간에서.
-    공유 encoder gradient norm: train iteration 마다 1 회 (그 iteration 의 첫 loss 호출) head 별 loss 로 공유 encoder
-            파라미터의 gradient norm (grad_norm_enc_from_role / _exp / _res). EMA / 불균형 경고는 training/callbacks.py
+    encoder gradient norm: train iteration 마다 1 회 (그 iteration 의 첫 loss 호출) head 별 loss 로 그 헤드 네트워크의
+            encoder · GNN 파라미터의 gradient norm (grad_norm_enc_from_role / _exp / _res). EMA / 불균형 경고는 training/callbacks.py
             EncGradMonitor (EMA 최대/최소 비율 10 배 이상이 10 iteration 연속일 때만)
 """
 import numpy as np
@@ -107,7 +105,7 @@ def decision_advantages(r, v, dec, boundary, done, gamma, lam=None):
 def compute_role_gae(policy, batch, other_agent_batches=None, episode=None):
     n = policy.model.n_agents
     keys = [f"reward_{h}" for h in ROLE_HEADS] + [f"{h}_train" for h in ROLE_HEADS] + \
-        ["role_valid", "rescue_valid", "explore_valid", "explore_reselect", "explore_active"]
+        ["role_valid", "rescue_valid", "explore_valid", "explore_active"]
     inf = _infos(batch, n, keys)
     env_cfg = policy.config.get("env_config") or {}
     lam = policy.config["lambda"]
@@ -124,7 +122,7 @@ def compute_role_gae(policy, batch, other_agent_batches=None, episode=None):
                 adv[:, i], vt[:, i], ok[:, i] = decision_advantages(inf["reward_role"][:, i], vf[h][:, i], dec[:, i],
                                                                     dec[:, i], done, gamma, lam)
             elif h == "explore":                               # 옵션: 다음 explore 결정 / 재선택 / EXPLORE 아님 에서 끝, bootstrap 없음
-                boundary = dec[:, i] | (inf["explore_reselect"][:, i] > 0) | (inf["explore_active"][:, i] < 0.5)
+                boundary = dec[:, i] | (inf["explore_active"][:, i] < 0.5)
                 adv[:, i], vt[:, i], ok[:, i] = decision_advantages(inf["reward_explore"][:, i], vf[h][:, i], dec[:, i],
                                                                     boundary, done, gamma)
             else:                                              # rescue 옵션: 다음 role / rescue 결정에서 끝, 할인 없음, bootstrap 없음
@@ -166,7 +164,6 @@ def role_ppo_loss(policy, model, dist_class, train_batch):
     logits, _ = model.from_batch(train_batch, is_training=True)
     curr = dist_class(logits, model)
     prev = dist_class(train_batch[SampleBatch.ACTION_DIST_INPUTS], model)
-    curr.s1, curr.s2 = prev.s1, prev.s2          # sample 별 full (1 + 2 단계) / stage-2-only 는 rollout 때 저장한 값
     logps = curr.logp(train_batch[SampleBatch.ACTIONS])
     ent, kl = curr.entropy(), prev.kl(curr)
     values, values_n = model.value_function(), model.value_function_norm()
@@ -208,12 +205,7 @@ def role_ppo_loss(policy, model, dist_class, train_batch):
                 f"value_target_mean_{h}": _mmean(vt, vm),
                 f"value_target_std_{h}": (_mmean(vt ** 2, vm) - _mmean(vt, vm) ** 2).clamp(min=0).sqrt(),
             })
-            if h == "explore":                                  # 1 / 2 단계별 학습 결정 수
-                stats["n_decisions_explore_s1"] = (pm * (curr.s1 > 0.5).float()).sum()
-                stats["n_decisions_explore_s2"] = (pm * (curr.s2 > 0.5).float()).sum()
-                s2only = pm * ((curr.s1 < 0.5) & (curr.s2 > 0.5)).float()
-                stats["n_decisions_explore_s2only"] = s2only.sum()
-                stats["explore_s2only_ratio"] = s2only.sum() / pm.sum().clamp(min=1.0)
+            if h == "explore":
                 stats["explore_logp_finite"] = torch.isfinite(torch.where(pm > 0, logps[h], torch.zeros_like(logps[h]))).all().float()
             if vnh is not None:
                 mu, sd = vnh.stats()
@@ -231,15 +223,16 @@ def role_ppo_loss(policy, model, dist_class, train_batch):
 
 
 def _probe_grad_norms(policy, model, head_loss):
-    """iteration 마다 1 회 (callbacks 의 on_train_result 가 policy._probe_pending 을 다시 켠다) head 별 loss 로 공유 encoder
-    파라미터의 gradient norm. 불균형 판정은 EMA 로 callbacks.EncGradMonitor 에서."""
-    params = [p for p in model.net.shared_encoder_parameters() if p.requires_grad]
-    if not params or not getattr(policy, "_probe_pending", True):
+    """iteration 마다 1 회 (callbacks 의 on_train_result 가 policy._probe_pending 을 다시 켠다) head 별 loss 로 그 헤드
+    네트워크의 encoder · GNN 파라미터 gradient norm. 불균형 판정은 EMA 로 callbacks.EncGradMonitor 에서."""
+    enc = model.net.encoder_parameters()
+    if not enc or not getattr(policy, "_probe_pending", True):
         return
     policy._probe_pending = False
     out = {}
     for h, l in head_loss.items():
-        if not l.requires_grad:
+        params = [p for p in enc[h] if p.requires_grad]
+        if not l.requires_grad or not params:
             out[h] = 0.0
             continue
         g = torch.autograd.grad(l, params, retain_graph=True, allow_unused=True)

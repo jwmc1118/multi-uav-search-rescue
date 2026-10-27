@@ -23,7 +23,7 @@ def _policy_net(policies):
 
 
 class EncGradMonitor:
-    """공유 encoder head 별 gradient norm 의 EMA (α) 와 불균형 경고. iteration 마다 update(norms, ev, ent).
+    """head 별 (자기 네트워크 encoder · GNN) gradient norm 의 EMA (α) 와 불균형 경고. iteration 마다 update(norms, ev, ent).
     EMA 최대/최소 비율 >= ratio_th 인 iteration 이 streak 번 연속이면 경고 (그 뒤 streak 번마다 다시) — 단발 스파이크는
     EMA 가 흡수하고 연속 조건도 못 채워 경고 없음. 경고에는 그 기간 head 별 EV / entropy 시작 -> 끝."""
 
@@ -45,7 +45,7 @@ class EncGradMonitor:
         if self.streak >= self.streak_len and self.streak % self.streak_len == 0:
             (ev0, en0), (ev1, en1) = self.hist[0], self.hist[-1]
             fmt = lambda a, b, h: f"{h} {a.get(h, float('nan')):.2f}->{b.get(h, float('nan')):.2f}"
-            warn = (f"[warn] 공유 encoder gradient norm 불균형: EMA 최대/최소 {ratio:.1f} 배가 {self.streak} iteration 연속 (EMA "
+            warn = (f"[warn] head 별 encoder gradient norm 불균형: EMA 최대/최소 {ratio:.1f} 배가 {self.streak} iteration 연속 (EMA "
                     + ", ".join(f"{h} {v:.3g}" for h, v in self.ema.items()) + ")\n"
                     + "       최근 " + str(len(self.hist)) + " iteration  EV " + ", ".join(fmt(ev0, ev1, h) for h in ev1)
                     + "  |  entropy " + ", ".join(fmt(en0, en1, h) for h in en1))
@@ -70,7 +70,7 @@ class RoleCallbacks(DefaultCallbacks):
                        이벤트 2 의 새 생존자 중 EXPLORE 는 시간 안에 못 가지만 RESCUE UAV 는 갈 수 있던 수
     link_made / link_broken / group_size_ep / nbr_bin{0..4} : 통신 링크 생성 / 해제, 평균 그룹 크기, 1-hop 이웃 거리 / R_c
                        구간 비율 (0-0.25, 0.25-0.5, 0.5-0.75, 0.75-1, 1 초과)
-    explore_s1 / explore_s2 : explore 1 단계 (덩어리) / 2 단계 (구간, 정책 결정) 결정 수
+    explore_s1 / explore_s2 : explore 1 단계 (덩어리, 정책 결정) 수 / 2 단계 κ Hungarian 구간 배정 (후보 2 개 이상) 수
     m_mean           : 담당자가 있는 덩어리당 평균 m (step 평균)
     ghost_drop       : 통신 이탈로 m 이 줄어든 (추정 담당으로 남긴) 횟수
     seg_life         : 구간을 받은 뒤 소진까지 평균 step
@@ -91,7 +91,7 @@ class RoleCallbacks(DefaultCallbacks):
     ev2_retained / ev2_retained_blob_changed : 이벤트 2 에서 EXPLORE 를 유지한 UAV 수 / 그중 영역이 바뀐 수 (0 이어야 함)
     ev2_redecide / ev2_rescue : 이벤트 2 한 번당 재결정 UAV 수 / 그중 RESCUE 수
     known_to_rescue  : 생존자 발견 -> 구조 (담당 UAV 도착) 까지 step 평균
-    explore_reselect : 에피소드당 stage-2-only 결정 (정책 호출) 수, explore_s2only_ratio (learner) = 학습 explore sample 중 비율
+    explore_reselect : 에피소드당 합류로 Hungarian 이 기존 배정자의 구간을 다시 배정한 수 (결정 아님, explore 옵션은 계속)
     conn/real_mean   : (진단) 에피소드 평균 실제 연결성 C_t (팀 전체 현재 위치, 쌍 비율)
     rescue/c_bar     : rescue 결정당 c̄ (옵션 동안 개인 연결도 c_{i,t} 평균)
     explore/conn_mult_mean : 새 셀이 있는 EXPLORE step 의 연결 배율 (1 + w_mult c_{i,t}) 평균
@@ -111,13 +111,13 @@ class RoleCallbacks(DefaultCallbacks):
                        new_cells_per_explore_step = step 당 새 셀)
     ev2_rescue_nearest : 이벤트 2 에서 RESCUE 를 고른 UAV 가 그 생존자에 가장 가까운 그룹 UAV 였던 비율
     gnn_ms_per_decision / gnn_ms_per_call : (rollout) GNN forward 시간 — 결정 (그래프) 1 개당 / 호출 1 회당 ms
-    model_params / gnn_params : (train iteration) 모델 전체 / 공유 GNN 파라미터 수
-    enc_grad_ema_{role,exp,res} / enc_grad_ratio / enc_grad_streak : (train iteration) 공유 encoder gradient norm EMA,
+    model_params / gnn_params : (train iteration) 모델 전체 / 세 네트워크 GNN (encoder 포함) 파라미터 수 합
+    enc_grad_ema_{role,exp,res} / enc_grad_ratio / enc_grad_streak : (train iteration) head 별 자기 네트워크 encoder gradient norm EMA,
                        EMA 최대/최소 비율, 10 배 이상 연속 iteration 수
     rescue_events    : rescue 보상 이벤트 (그룹) 수
     role_osc / role_forced / role_voluntary : 역할 진동 (penalty) / 강제 전환 / 비강제 전환 횟수
     dup_in / dup_out : 중복 추적 penalty 횟수 (같은 그룹 / 그룹 밖의 더 가까운 UAV)
-    (공유 encoder head 별 gradient norm 은 learner_stats 의 grad_norm_enc_from_role / _exp / _res)
+    (head 별 gradient norm 은 learner_stats 의 grad_norm_enc_from_role / _exp / _res — 각 head 의 자기 네트워크)
     role_switch      : 에피소드당 역할 전환 횟수
     role_{explore,rescue,return}_bin{0..9} : 에피소드 진행 0~100% 를 10 구간으로 나눈 역할 비율
     cap0_explore     : 용량 0 인 UAV-step 중 EXPLORE 비율 (return vs explore 판단 분석용)
@@ -244,7 +244,7 @@ class RoleCallbacks(DefaultCallbacks):
 
     @staticmethod
     def _enc_grad(trainer, st, result):
-        """공유 encoder gradient norm EMA / 불균형 경고 + 다음 iteration 측정 예약 (policy._probe_pending)."""
+        """head 별 encoder gradient norm EMA / 불균형 경고 + 다음 iteration 측정 예약 (policy._probe_pending)."""
         mon = getattr(trainer, "_enc_monitor", None)
         if mon is None:
             mon = trainer._enc_monitor = EncGradMonitor()
@@ -286,9 +286,6 @@ class RoleCallbacks(DefaultCallbacks):
         cfg = trainer.config
         scale = cfg["train_batch_size"] / max(1, cfg["sgd_minibatch_size"])
         per_batch = {h: float(st[f"n_decisions_{h}"]) * scale for h in ("role", "rescue", "explore")}
-        for k in ("explore_s1", "explore_s2", "explore_s2only"):
-            if f"n_decisions_{k}" in st:
-                per_batch[k] = float(st[f"n_decisions_{k}"]) * scale
         result.setdefault("custom_metrics", {}).update({f"decisions_per_batch_{h}": v for h, v in per_batch.items()})
         self._enc_grad(trainer, st, result)
         if "cur_lr" in st:
@@ -297,7 +294,7 @@ class RoleCallbacks(DefaultCallbacks):
         try:
             net = trainer.get_policy().model.net
             result["custom_metrics"].update(model_params=sum(p.numel() for p in trainer.get_policy().model.parameters()),
-                                            gnn_params=sum(p.numel() for p in net.gnn.parameters()))
+                                            gnn_params=sum(p.numel() for ps in net.encoder_parameters().values() for p in ps))
         except Exception:
             pass
         mode = (cfg.get("env_config") or {}).get("policy_mode") or {}

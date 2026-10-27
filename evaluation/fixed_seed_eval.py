@@ -9,7 +9,7 @@ import time
 
 import numpy as np
 
-ACT_KEYS = ("role", "rescue", "explore", "explore_sub")
+ACT_KEYS = ("role", "rescue", "explore")
 
 
 def evaluate_greedy(policy, env_config, n_seeds=15):

@@ -9,7 +9,7 @@
  [9] S_eff (그리디 2 단계 Hungarian 비용 κ): 다른 UAV 구간과 겹치는 셀 중 그 UAV 가 BFS 로 더 가까운 셀만 뺀다 (동률은 유지)
 [12] 결정 없는 RESCUE step 은 rescue 보상 0, 보상 항목 = REWARD_ITEMS
 [13] U_ε: σ < 0 인 생존자 · G_res 밖 UAV (다른 그룹) 가 맡은 생존자는 빠짐
-[14] 학습: rescue 는 옵션 합 (할인 없음, 다음 role / rescue 결정에서 끝) A = R - V / explore 는 옵션 return (길이 3 -> a + γb + γ²c, 역할 변경 · 다음 explore
+[14] 학습: rescue 는 옵션 합 (할인 없음, 다음 role / rescue 결정에서 끝) A = R - V / explore 는 옵션 return (합류 재배정에서는 안 끝남) (길이 3 -> a + γb + γ²c, 역할 변경 · 다음 explore
      결정에서 끝, bootstrap 없음, fragment 끝에서 열린 옵션은 마스크 0)
 [16] 연결성 C_pair = Σ_k n_k (n_k - 1) / (N (N - 1)): N = 5 의 연결 요소 배치 5 / 4+1 / 3+2 / 3+1+1 / 2+2+1 / 2+1+1+1 / 1×5
      -> 1.0 / 0.6 / 0.4 / 0.3 / 0.2 / 0.1 / 0.0, N = 1 -> 0, N = 2 연결 -> 1 / 끊김 -> 0, 간선 = 거리 <= R_c (경계 포함)
@@ -287,13 +287,12 @@ def check_explore_one_shot():
     bt2 = compute_role_gae(pol, gae_batch(rows2))
     assert abs(bt2[VT["explore"]][1, 0] - (a + g * b)) < 1e-6
     assert bt2[PMASK["explore"]][3, 0] == 0 and bt2[PMASK["explore"]].sum() == 1
-    # (3) 재선택 (explore_reselect, 정책 결정 아님) 도 옵션을 끝낸다
-    rows3 = dict(rows2, explore_valid=col([0, 1, 0, 0, 0, 0]), explore_train=col([0, 1, 0, 0, 0, 0]),
-                 explore_reselect=col([0, 0, 1, 0, 0, 0]))
+    # (3) 합류 재배정 (explore_reselect, Hungarian — 정책 결정 아님) 은 옵션을 끝내지 않는다 (역할 변경 t=4 에서 끝)
+    rows3 = dict(rows, explore_reselect=col([0, 0, 1, 0, 0, 0]))
     bt3 = compute_role_gae(pol, gae_batch(rows3))
-    assert abs(bt3[VT["explore"]][1, 0] - a) < 1e-6
+    assert abs(bt3[VT["explore"]][1, 0] - R) < 1e-6
     print(f"[14] rescue option sum (0.7 + 0.1, ends at next role decision) A = R - V; explore option return a + γb + γ²c = {R:.4f} (ends on role change, no bootstrap), "
-          f"ends at next explore decision / reselect, open option at fragment end masked")
+          f"ends at next explore decision (not at a join re-assignment), open option at fragment end masked")
 
 
 def check_role_reward_exact():
