@@ -14,6 +14,9 @@ import yaml
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 DEFAULT_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env.yaml", "role.yaml", "explore.yaml", "rescue.yaml")]
+# main_gui.py 전용 yaml (학습용과 key 구조가 같음, 병합 순서도 같음) — gui_evaluation/config/
+MAIN_CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui_evaluation", "config")
+MAIN_FILES = [os.path.join(MAIN_CONFIG_DIR, f) for f in ("env_main.yaml", "role_main.yaml", "explore_main.yaml", "rescue_main.yaml")]
 
 
 def merge(base, over):
@@ -29,7 +32,7 @@ def merge(base, over):
 
 def reward_settings_line(cfg, tag="train"):
     """실제 적용되는 보상 설정 한 줄 (env 기본값 REWARDS_DEFAULTS 위에 yaml env_config.rewards, gamma = 최상위 config) —
-    train.py / main.py 시작 출력 (설정 반영 확인용)."""
+    train.py / main_gui.py 시작 출력 (설정 반영 확인용)."""
     from env.role.simulation import REWARDS_DEFAULTS
     env = cfg.get("env_config") or {}
     given = env.get("rewards") or {}

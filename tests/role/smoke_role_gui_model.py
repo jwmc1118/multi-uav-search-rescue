@@ -11,7 +11,7 @@ import pygame
 
 from env.role.simulation import RoleSimulation
 from gui.grid_map import GridMap
-from evaluation.checkpoint_policy import resolve_checkpoint
+from eval_common.checkpoint_policy import resolve_checkpoint
 from training.config_loader import load_config
 
 

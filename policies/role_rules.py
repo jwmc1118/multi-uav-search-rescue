@@ -15,7 +15,7 @@ sim.cur_xclaim (덩어리 슬롯) 에 넣어 둔다. 그리디는 담당 후보�
 
 decider 인터페이스: role(sim, i, mask) / rescue(sim, i, mask) / explore(sim, i, mask) / explore_sub(sim, i, mask) -> 슬롯 인덱스.
 RoleSimulation.step(decider) 에 넘기거나, step_explicit 이 rule 헤드 / 마스크 위반 대체에 이 규칙을 쓴다.
-기준선: python -m evaluation.run_rules
+기준선: python -m rule_evaluation.run_rules
 """
 import numpy as np
 

@@ -2,7 +2,7 @@
 
 training/callbacks.py RoleCallbacks.on_train_result 가 eval.every iteration 마다 driver (local worker) 의 policy 로 부른다.
 평가 전용 env 를 따로 만들어 쓰므로 학습 rollout 워커 · 그 env 에는 영향이 없다 (모델 greedy 플래그는 끝나면 되돌림).
-seed 설정은 evaluation/run_rules.py run_episode 와 같다: sim.random_state = RandomState(seed), sim.reset().
+seed 설정은 rule_evaluation/run_rules.py run_episode 와 같다: sim.random_state = RandomState(seed), sim.reset().
 """
 import copy
 import time

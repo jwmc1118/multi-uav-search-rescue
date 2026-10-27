@@ -1,13 +1,13 @@
 """학습된 체크포인트를 GUI/평가에서 굴리기 위한 래퍼.
 
-gui/grid_map.py (Model 버튼), main.py, evaluation/evaluate.py 가 .step(sim) 으로 쓴다: 모델이 그룹 순서대로 순차 디코딩한
+gui/grid_map.py (Model 버튼), main_gui.py, rule_evaluation/evaluate.py 가 .step(sim) 으로 쓴다: 모델이 그룹 순서대로 순차 디코딩한
 dict(role, rescue, explore) 를 sim.step_explicit() 로 그대로 넣는다 (explore 2 단계는 env 의 κ Hungarian).
 ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡아 상태메시지로 처리한다.
 
 행동 선택 방식 mode: "greedy" (기본, 세 헤드 argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
 
 실행 환경 설정 두 가지:
-    env_priority=True  (main.py / GUI Model 버튼): 호출자 env_config (main 전용 yaml) 를 그대로 쓴다. 관측 차원 · 네트워크
+    env_priority=True  (main_gui.py / GUI Model 버튼): 호출자 env_config (main 전용 yaml) 를 그대로 쓴다. 관측 차원 · 네트워크
                        구조를 정하는 값 (structure_diff) 이 체크포인트와 다르면 어떤 키가 다른지 에러. 입력 정규화 분모
                        (NORM_KEYS) 가 다르면 경고만 (self.warnings).
     env_priority=False (evaluation 스크립트): 체크포인트 env_config 를 기본으로 호출자 값으로 덮어쓰되 SHAPE_KEYS 는 체크포인트 값.

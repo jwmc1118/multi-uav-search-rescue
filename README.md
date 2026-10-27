@@ -71,10 +71,10 @@ python -m training.train                                  # 계층 구조 3 헤�
 python -m training.train --smoke --local                  # 1 iteration 점검
 
 # 규칙 정책 기준선 / 평가
-python -m evaluation.run_rules                            # 그리디 정책 200 seed
-python -m evaluation.evaluate <checkpoint> --compare                            # 학습 정책 vs 규칙
-python -m evaluation.upper_bound [--checkpoint <checkpoint>]
-python -m evaluation.scale_eval <checkpoint> --n 2,3,4,5,6,8
+python -m rule_evaluation.run_rules                            # 그리디 정책 200 seed
+python -m rule_evaluation.evaluate <checkpoint> --compare                            # 학습 정책 vs 규칙
+python -m rule_evaluation.upper_bound [--checkpoint <checkpoint>]
+python -m scale_evaluation.scale_eval <checkpoint> --n 2,3,4,5,6,8
 
 # 점검
 python -m tests.role.test_role_env

@@ -127,7 +127,7 @@ class BaseSimulation:
         self.local_ch_idx = [CHANNEL_INDEX[c] for c in self.cfg["local_channels"]]
 
         self.max_targets = int(self.cfg["max_targets"])
-        self.recorder = None       # evaluation.alloc_recorder.AllocRecorder (있으면 reset / tick 마다 기록)
+        self.recorder = None       # gui_evaluation.alloc_recorder.AllocRecorder (있으면 reset / tick 마다 기록)
 
         self.n_agents = len(self.agents)
         ds = self.cfg["global_downsample"]

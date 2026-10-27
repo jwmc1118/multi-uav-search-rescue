@@ -89,7 +89,7 @@ def make(seed, cell=22, width=None):
 
 def main(seed=9):
     os.makedirs(OUT, exist_ok=True)
-    gm = make(seed, 21)                                       # main.py GRID_CELL_SIZE
+    gm = make(seed, 21)                                       # main_gui.py GRID_CELL_SIZE
     sim = gm.sim
     ex = None
     for _ in range(120):

@@ -1,8 +1,8 @@
 """이론적 상한 / 실패 원인 분석 (학습 코드와 독립).
 
-    python evaluation/upper_bound.py --episodes 500
-    python evaluation/upper_bound.py --episodes 200 --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000460
-    python evaluation/upper_bound.py --episodes 200 --checkpoint <ckpt> --n_agents 6   # 학습과 다른 UAV 수
+    python rule_evaluation/upper_bound.py --episodes 500
+    python rule_evaluation/upper_bound.py --episodes 200 --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000460
+    python rule_evaluation/upper_bound.py --episodes 200 --checkpoint <ckpt> --n_agents 6   # 학습과 다른 UAV 수
 
 목적: 정책의 구조율(≈0.85)이 정책 문제인지, 원리적으로 못 구하는 조난자 때문인지 구분.
 
@@ -158,9 +158,9 @@ def save_bounds(eps, tgt_rows, tag):
 # ---------------------------------------------------------------- 실패 원인
 
 def run_policy(ckpt, cfg, eps):
-    from evaluation.alloc_recorder import AllocRecorder
+    from gui_evaluation.alloc_recorder import AllocRecorder
     from env.role.simulation import RoleSimulation
-    from evaluation.checkpoint_policy import CheckpointPolicy
+    from eval_common.checkpoint_policy import CheckpointPolicy
     policy = CheckpointPolicy(ckpt, env_config=cfg)
     print(f"  {policy.describe()}")
     sim = RoleSimulation(policy.env_config)
@@ -270,7 +270,7 @@ def main():
 
     ckpt, tag = None, ""
     if args.checkpoint:
-        from evaluation.checkpoint_policy import load_train_config, resolve_checkpoint
+        from eval_common.checkpoint_policy import load_train_config, resolve_checkpoint
         ckpt = resolve_checkpoint(os.path.join(_CALLER_CWD, os.path.expanduser(args.checkpoint)))
         cfg = load_train_config(ckpt)["env_config"]
         tag = "_" + os.path.basename(os.path.dirname(ckpt))
@@ -281,7 +281,7 @@ def main():
         cfg = y["env_config"]
         print(f"env_config: {', '.join(args.config) if args.config else 'env.yaml + role.yaml + explore.yaml + rescue.yaml'}")
 
-    from evaluation.checkpoint_policy import with_n_agents
+    from eval_common.checkpoint_policy import with_n_agents
     cfg = with_n_agents(cfg, args.n_agents)
     if args.n_agents:
         tag += f"_N{args.n_agents}"

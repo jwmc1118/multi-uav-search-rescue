@@ -1,4 +1,4 @@
-"""(rule, rule, rule) 모드 학습 루프 rollout == evaluation/run_rules.py (default) 결과 점검.
+"""(rule, rule, rule) 모드 학습 루프 rollout == rule_evaluation/run_rules.py (default) 결과 점검.
 
     python -m tests.role.test_role_rule_equiv [episodes]
 

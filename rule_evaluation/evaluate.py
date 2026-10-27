@@ -1,10 +1,10 @@
 """학습된 체크포인트 평가 (헤드리스).
 
-    python evaluation/evaluate.py <checkpoint>                         # 세 헤드 greedy, seed 0~99
-    python evaluation/evaluate.py <checkpoint> --compare --seeds 0-9  # 학습 정책 vs 그리디 정책 표 + CSV
-    python evaluation/evaluate.py <checkpoint> --mode sample --seeds 0,3,7
-    python evaluation/evaluate.py <checkpoint> --render                # pygame 으로 재생
-    python evaluation/evaluate.py <checkpoint> --n_agents 6           # 학습 때와 다른 UAV 수로 (기본 = 체크포인트 값)
+    python rule_evaluation/evaluate.py <checkpoint>                         # 세 헤드 greedy, seed 0~99
+    python rule_evaluation/evaluate.py <checkpoint> --compare --seeds 0-9  # 학습 정책 vs 그리디 정책 표 + CSV
+    python rule_evaluation/evaluate.py <checkpoint> --mode sample --seeds 0,3,7
+    python rule_evaluation/evaluate.py <checkpoint> --render                # pygame 으로 재생
+    python rule_evaluation/evaluate.py <checkpoint> --n_agents 6           # 학습 때와 다른 UAV 수로 (기본 = 체크포인트 값)
 
 <checkpoint> = checkpoint_XXXXXX 폴더 또는 그 안의 checkpoint-XX 파일.
 환경 설정은 체크포인트의 학습 config(params.json 의 env_config)를 그대로 쓴다 (--map 을 주면 그 맵 파일 고정).
@@ -18,7 +18,7 @@
 import os
 import sys
 
-# 스크립트를 직접 실행해도 (python evaluation/evaluate.py, IDE 실행 버튼) 패키지를 찾도록 레포 루트를 경로에 추가.
+# 스크립트를 직접 실행해도 (python rule_evaluation/evaluate.py, IDE 실행 버튼) 패키지를 찾도록 레포 루트를 경로에 추가.
 # Ray 워커 프로세스도 같은 경로를 쓰도록 PYTHONPATH 에도 넣고, 상대 경로(maps/, config)를 위해 루트로 이동한다.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -32,55 +32,7 @@ import csv
 
 import numpy as np
 
-METRICS = ["rescue_rate", "expire_rate", "discover_rate", "explored", "same_cell", "conflict_cross",
-           "escalations", "episode_len"]
-
-
-class RulePolicy:
-    """그리디 정책을 CheckpointPolicy 와 같은 인터페이스로 (step / seed / set_mode) — 비교 평가용."""
-
-    def __init__(self):
-        from policies.role_rules import RuleDecider
-        self.decider = RuleDecider()
-        self.name = "rule-greedy"
-
-    def step(self, sim):
-        return sim.step(self.decider)
-
-    def seed(self, seed):
-        pass
-
-    def set_mode(self, *a, **k):
-        pass
-
-
-def parse_seeds(text):
-    """'0-99' / '0,3,7' / '0-4,10' -> [int]."""
-    out = []
-    for part in text.split(","):
-        if "-" in part:
-            a, b = part.split("-")
-            out += list(range(int(a), int(b) + 1))
-        elif part:
-            out.append(int(part))
-    return out
-
-
-def run_episode(sim, policy, seed):
-    sim.random_state = np.random.RandomState(seed)   # 맵 / 조난자 / 골든타임 / 시작 위치
-    sim.reset()
-    policy.seed(seed)                                # 정책 샘플링
-    conflict = esc = 0
-    done, info = False, {}
-    while not done:
-        done, info = policy.step(sim)                # 이동은 env 의 BFS 경로 추종
-        conflict += int(info["rescue_conflict_cross"])
-        esc += int(info["redecide"])
-    n_t = max(1, len(sim.targets))
-    return {"rescue_rate": info["rescued_total"] / n_t, "expire_rate": info["expired_total"] / n_t,
-            "discover_rate": info["discovered_total"] / n_t, "explored": info["explored"],
-            "same_cell": info["same_cell_total"], "conflict_cross": conflict, "escalations": esc,
-            "episode_len": info["time"]}
+from eval_common.episode import METRICS, RulePolicy, parse_seeds, run_episode   # noqa: F401 (기존 import 경로 호환)
 
 
 def evaluate(sim, policy, seeds, label, mode="greedy"):
@@ -117,7 +69,7 @@ def main():
     args = ap.parse_args()
 
     from env.role.simulation import RoleSimulation
-    from evaluation.checkpoint_policy import CheckpointPolicy, load_train_config, resolve_checkpoint, with_n_agents
+    from eval_common.checkpoint_policy import CheckpointPolicy, load_train_config, resolve_checkpoint, with_n_agents
 
     ckpt = resolve_checkpoint(os.path.join(_CALLER_CWD, os.path.expanduser(args.checkpoint)))
     env_cfg = load_train_config(ckpt).get("env_config", {})     # 학습 때와 같은 환경 (관측 크기도 일치)

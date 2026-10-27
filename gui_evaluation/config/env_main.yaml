@@ -1,4 +1,4 @@
-# main.py 전용 설정 (학습은 env.yaml 을 사용)
+# main_gui.py 전용 설정 (학습은 env.yaml 을 사용)
 # 환경 + 학습 공통 설정 — 맵 크기 · 장애물 · 조난자 · UAV · 관측 (env/role/simulation.py) 과 세 정책 공통 PPO / 병렬 수집
 # 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml 을 합쳐서 쓴다)
 # 정책별 설정 (학습 / 규칙, 이벤트, 보상 weight, 네트워크) 은 role.yaml / explore.yaml / rescue.yaml
@@ -30,12 +30,12 @@ num_workers: 10                  # 데이터 수집 프로세스 수
 num_envs_per_worker: 2          # 워커 하나가 동시에 돌리는 환경 수
 num_gpus: 1                     # 학습에 쓰는 GPU 수 (0 = CPU, 없으면 train.py 가 자동으로 0)
 
-# ---- 고정 seed 평가 (training/callbacks.py -> evaluation/fixed_seed_eval.py, train.py 가 읽고 RLlib 에는 넘기지 않음) ----
+# ---- 고정 seed 평가 (training/callbacks.py -> training/fixed_seed_eval.py, train.py 가 읽고 RLlib 에는 넘기지 않음) ----
 eval:
   every: 10                     # iteration 마다 학습과 별도로 평가 (driver policy, rollout 워커 영향 없음). 0 = 끔
   episodes: 15                  # 고정 seed 수 (run_rules 와 같은 seed 0 .. episodes-1), 세 head argmax 행동
                                 #   best = eval 구조율 최대 (같으면 에피소드 길이가 짧은 쪽) -> checkpoints/best/
-  greedy_baseline: 0.921        # reward_plot Eval 그래프 기준선 = 그리디 15 seed 구조율 (python -m evaluation.run_rules --episodes 15)
+  greedy_baseline: 0.921        # reward_plot Eval 그래프 기준선 = 그리디 15 seed 구조율 (python -m rule_evaluation.run_rules --episodes 15)
 
 # ---- 네트워크 공통 (models/role/net.py) — 정책별 구조 · 크기는 role.yaml / explore.yaml / rescue.yaml 의 model ----
 model:
@@ -98,11 +98,11 @@ env_config:
     - {sensor_range: 4, comm_range: 10}
     - {sensor_range: 4, comm_range: 10}
 
-  # ---- GUI (python main.py 로 띄울 때만 쓰임 — main.py 는 env_main.yaml 의 값을 읽는다) ----
+  # ---- GUI (python main_gui.py 로 띄울 때만 쓰임 — main_gui.py 는 env_main.yaml 의 값을 읽는다) ----
   gui:
     cluster_info_max_rows: 8    # inspector Cluster info 에 보여 줄 덩어리 줄 수 (크기 내림차순, 넘으면 "+k more")
 
-# ---- main.py / GUI 실행 설정 (main 전용 — 학습은 읽지 않음) ----
+# ---- main_gui.py / GUI 실행 설정 (main 전용 — 학습은 읽지 않음) ----
 main:
   checkpoint: null              # 시작할 때 불러올 RolePPO 체크포인트 (checkpoint_XXXXXX 폴더 또는 그 안의 checkpoint-XX 파일).
                                 #   null = 규칙 정책으로 시작 (GUI Model 버튼으로 나중에 불러와도 됨, M 키: model -> rules -> random)
@@ -110,7 +110,7 @@ main:
                                 #   환경 설정은 이 *_main.yaml 이 우선. 관측 차원 / 네트워크 구조가 다르면 어떤 키가 다른지 에러
   # checkpoint : marl_models/RolePPO/checkpoints/checkpoint_000060
   model_mode: greedy            # 모델 행동 선택: greedy (argmax) | sample (학습 때와 같은 확률 정책). 이동은 항상 BFS
-  figures_dir: figures          # 임무 할당 분석 그래프 (Alloc Plots 버튼 / G 키) 저장 폴더 (레포 기준 상대 경로)
+  figures_dir: results/gui_evaluation   # 임무 할당 분석 그래프 (Alloc Plots 버튼 / G 키) 저장 폴더 (레포 기준 상대 경로)
   auto_save_plots: false        # true 면 에피소드가 끝날 때마다 자동 저장
   inspector_width: 560          # 오른쪽 inspector 패널 폭 (px). 지도 셀 크기가 이 폭에 맞춰 정해진다
   font_size: 17                 # inspector 기준 글자 크기 (제목 = +4, legend / 본문 = 이 값) — gui/style.py BASE_FONT

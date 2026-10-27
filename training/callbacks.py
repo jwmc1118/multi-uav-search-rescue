@@ -56,7 +56,7 @@ class RoleCallbacks(DefaultCallbacks):
     """계층 구조 env (env/role/gym_env.py) 에피소드 지표.
 
     eval/rescue_rate / eval/expired_rate / eval/episode_len / eval/explored_rate (+ _std) / eval/time_s :
-                       (train iteration, eval.every 마다) 고정 seed · 세 head argmax 평가 (evaluation/fixed_seed_eval.py)
+                       (train iteration, eval.every 마다) 고정 seed · 세 head argmax 평가 (training/fixed_seed_eval.py)
     learner/cur_lr   : (train iteration) 현재 학습률 (lr_schedule 적용 값)
 
     reward_{role,rescue,explore} : 에피소드 보상 합 (UAV 평균)
@@ -271,7 +271,7 @@ class RoleCallbacks(DefaultCallbacks):
         ec = type(self).eval_cfg
         if not ec or int(ec.get("every") or 0) <= 0 or result["training_iteration"] % int(ec["every"]):
             return
-        from evaluation.fixed_seed_eval import evaluate_greedy
+        from training.fixed_seed_eval import evaluate_greedy
         out = evaluate_greedy(trainer.get_policy(), trainer.config["env_config"], int(ec.get("episodes", 15)))
         result["custom_metrics"].update(out)
         print(f"[eval] iter {result['training_iteration']}: rescue {out['eval/rescue_rate']:.3f} ± {out['eval/rescue_rate_std']:.3f}"

@@ -1,7 +1,7 @@
 """GUI 스타일 표 — 화면에 그리는 모든 요소의 색 / 도형 / 의미를 여기 한 곳에서 정의한다.
 
 규칙
-  - 화면에 나오는 문자열 (범례 설명 등) 은 영어. 글자 크기 기준 = BASE_FONT (main.py GUI_FONT_SIZE)
+  - 화면에 나오는 문자열 (범례 설명 등) 은 영어. 글자 크기 기준 = BASE_FONT (main_gui.py GUI_FONT_SIZE)
   - gui/grid_map.py 의 그리기 코드는 이 표 (STYLE / UI) 만 참조한다 (RGB 숫자 직접 쓰기 금지 — tests/role/test_gui_style.py 가 검사).
   - 새로 그리는 요소는 STYLE 에 등록하고 draw_cell / draw_marker / draw_path 로 그린다. 그리면 Usage 에 기록되고,
     그 패널의 범례 (legend_items) 가 기록된 요소만 표의 순서대로 자동으로 보여 준다.
@@ -95,7 +95,7 @@ UI = {
 }
 
 # inspector 패널 (선택 UAV 상세) 기준 글자 크기 — 제목 = BASE_FONT + 4, legend / 본문 = BASE_FONT.
-# main.py 의 GUI_FONT_SIZE 로 바꾼다 (GridMap(font_size=...) -> set_base_font)
+# main_gui.py 의 GUI_FONT_SIZE 로 바꾼다 (GridMap(font_size=...) -> set_base_font)
 BASE_FONT = 17
 TITLE_DELTA = 4
 

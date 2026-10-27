@@ -1,4 +1,4 @@
-"""임무 할당 분석 그래프 (논문용) — evaluation/alloc_recorder.py 의 snapshot() 을 받아 그림 + 원자료를 저장한다.
+"""임무 할당 분석 그래프 (논문용) — gui_evaluation/alloc_recorder.py 의 snapshot() 을 받아 그림 + 원자료를 저장한다.
 
     out_dir = save_alloc_plots(recorder.snapshot(sim), figures_root)
 

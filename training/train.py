@@ -8,7 +8,7 @@
 
 학습 구조 = 계층 구조 3 헤드 Role / Rescue / Explore (training/role/ppo.py, config env: rescue_role).
 best 기준 = 고정 seed 평가 (eval.every iteration 마다, run_rules 와 같은 seed, 세 head argmax) 의 구조율 최대,
-          같으면 에피소드 길이가 짧은 쪽 (evaluation/fixed_seed_eval.py, training/callbacks.py).
+          같으면 에피소드 길이가 짧은 쪽 (training/fixed_seed_eval.py, training/callbacks.py).
 
 이어서 학습 (특정 체크포인트 기준):
     python training/train.py --resume marl_models/RolePPO/checkpoints/checkpoint_000200
@@ -49,7 +49,7 @@ from ray.tune.logger import UnifiedLogger
 
 from training.callbacks import RoleCallbacks
 from training.catalog import register_all
-from evaluation.checkpoint_policy import resolve_checkpoint, restore_or_explain
+from eval_common.checkpoint_policy import resolve_checkpoint, restore_or_explain
 from training.config_loader import load_config, reward_settings_line
 from training.role.ppo import RolePPOTrainer
 from training.reward_plot import PREV_PROGRESS, read_progress, save_reward_plot
@@ -104,7 +104,7 @@ def main():
         raise SystemExit(f"[train] config env={config.get('env')!r} — 계층 구조 env 'rescue_role' 만 지원")
     print(reward_settings_line(config, "train"))         # 실제 적용 보상 값 (env 기본값 위에 yaml)
     config["callbacks"] = RoleCallbacks          # 에피소드 지표 (custom_metrics). yaml 에는 넣지 않는다
-    config.pop("main", None)                     # main.py 전용 섹션 (*_main.yaml 과 key 구조를 맞추려고 env.yaml 에도 있음) — RLlib 이 모르는 키
+    config.pop("main", None)                     # main_gui.py 전용 섹션 (*_main.yaml 과 key 구조를 맞추려고 env.yaml 에도 있음) — RLlib 이 모르는 키
     RoleCallbacks.eval_cfg = config.pop("eval", None)   # 고정 seed 평가 설정 (RLlib 이 모르는 키) -> driver 콜백
     ev = RoleCallbacks.eval_cfg or {}
     print(f"[train] eval: every {ev.get('every')} iterations, {ev.get('episodes')} fixed seeds, greedy (best = eval rescue rate, "

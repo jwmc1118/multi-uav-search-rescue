@@ -7,14 +7,14 @@ Layout (3 columns):
 색 / 도형은 전부 gui/style.py 의 스타일 표 (STYLE / UI) 에서 온다 — 여기서 RGB 를 직접 쓰지 않는다.
 일반 기호 legend 는 메인 맵 아래 한 줄 바 (H 토글, 기본 표시). inspector 는 local view -> group map (DBSCAN 덩어리 색)
 inspector 2 열: 왼쪽 = local view / group map, 오른쪽 = 각 지도 옆에 My cluster segments + Goal / Group clusters + GROUPS.
-화면에 나오는 문자열은 전부 영어. inspector 글자 크기 = gui/style.py BASE_FONT (main.py GUI_FONT_SIZE),
-inspector 폭 = main.py INSPECTOR_WIDTH — 레이아웃 (_inspector_geometry) 은 창 크기가 바뀔 때만 계산해 캐시하고, 선택 UAV /
+화면에 나오는 문자열은 전부 영어. inspector 글자 크기 = gui/style.py BASE_FONT (main_gui.py GUI_FONT_SIZE),
+inspector 폭 = main_gui.py INSPECTOR_WIDTH — 레이아웃 (_inspector_geometry) 은 창 크기가 바뀔 때만 계산해 캐시하고, 선택 UAV /
 위치 / 텍스트와 무관하게 매 프레임 같다. 지도 셀 크기는 패널 폭에 맞추고, 높이가 모자라면 두 지도를 같은 비율로 줄인다.
 이벤트 기록 (event_log) 은 계속 쌓지만 화면에는 표시하지 않는다.
   ● UAV (굵은 이중 링 = 선택)  ▲ 생존자  ★ 이동 목표점  ◆ 구간 대표점 (medoid, 개인 뷰)  ■ depot  점선 = BFS 경로
   칸: 장애물 진회색 / 탐색됨 흰색 / 미탐색 진파랑 / frontier 초록 / 내 구간 = 내 UAV 색 진하게 /
       같은 덩어리 팀원 구간 = 그 팀원 색 연하게 + 번호
-실행은 레포 루트에서  python main.py
+실행은 레포 루트에서  python main_gui.py
 
 Controls
 - Space or Play : play / pause          N or Right or Step : single step
@@ -23,12 +23,12 @@ Controls
 - while paused: left-drag = obstacles, right-click = add/remove target
 - Change Map : new random obstacle map + targets   Targets : re-place targets only
 - Save/Load : map file   Model : load a trained checkpoint
-- G or Alloc Plots : save allocation analysis figures to figures/<time>_<policy>_t<step>/ and open the folder
+- G or Alloc Plots : save allocation analysis figures to results/gui_evaluation/<time>_<policy>_t<step>/ and open the folder
 - P (B) or Path : BFS 경로   C : 덩어리 · 구간 색칠 (전체 맵)   L : 할당 연결선 · 중복 추적   H : 전체 맵 범례
 - V : 센서 범위 (UAV 색 반투명) · 통신 범위 (UAV 색 점선 사각형) — 선택 UAV 가 있으면 그 UAV 만, 없으면 전체
 
 결정은 기본적으로 규칙 정책 (policies/role_rules.py), M 키로 rules -> random -> model. 체크포인트를 불러오면
-evaluation/checkpoint_policy.py 를 통해 학습된 정책이 구동한다.
+eval_common/checkpoint_policy.py 를 통해 학습된 정책이 구동한다.
 화면의 모든 위치 표기는 월드 좌표 (x, y) 이다 (env/core/coords.py: x 오른쪽, y 위쪽, 원점 = 맵 중앙).
 """
 import os
@@ -41,7 +41,7 @@ import subprocess
 import numpy as np
 import pygame
 
-from evaluation.alloc_recorder import AllocRecorder
+from gui_evaluation.alloc_recorder import AllocRecorder
 from env.role.simulation import RoleSimulation
 from env.core.modes import Mode
 from env.core.knowledge import frontier_map
@@ -68,7 +68,7 @@ def _open_folder(path):
 def _plot_worker(data, figures_dir, q):
     """별도 프로세스에서 분석 그래프 생성 (GUI 그리기 루프와 GIL 을 다투지 않게). 결과를 큐로 돌려준다."""
     try:
-        from evaluation.alloc_plots import save_alloc_plots
+        from gui_evaluation.alloc_plots import save_alloc_plots
         q.put(("ok", save_alloc_plots(data, figures_dir)))
     except Exception as e:
         q.put(("error", f"{type(e).__name__}: {e}"))
@@ -79,7 +79,7 @@ MAP_TARGET_DIR = os.path.join("maps", "map_target")
 # training/train.py 가 체크포인트를 저장하는 곳 (레포 루트/marl_models)
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "marl_models")
 
-INSPECTOR_WIDTH = 560          # inspector 패널 기본 폭 (main.py INSPECTOR_WIDTH 로 바꾼다)
+INSPECTOR_WIDTH = 560          # inspector 패널 기본 폭 (main_gui.py INSPECTOR_WIDTH 로 바꾼다)
 MODE_NAME = {Mode.EXPLORE: "EXPLORE", Mode.RESCUE: "RESCUE", Mode.RETURN: "RETURN"}
 MODE_UI = {Mode.EXPLORE: "mode_explore", Mode.RESCUE: "mode_rescue", Mode.RETURN: "mode_return"}
 
@@ -117,9 +117,9 @@ class GridMap:
                  figures_dir=None, auto_save_plots=False, speed_index=2, model_config=None):
         self.sim = sim
         obs_panel_width = obs_panel_width or INSPECTOR_WIDTH   # inspector 폭 (local / group 지도가 이 폭에 맞춰 커진다)
-        style.set_base_font(font_size)                         # inspector 기준 글자 크기 (main.py GUI_FONT_SIZE)
-        # 임무 할당 분석 (evaluation/alloc_recorder.py · alloc_plots.py): 기록기를 붙이고, Alloc Plots 버튼 / G 키 / 에피소드 끝(옵션)에 그래프 저장
-        self.figures_dir = figures_dir or os.path.join(REPO_ROOT, "figures")
+        style.set_base_font(font_size)                         # inspector 기준 글자 크기 (main_gui.py GUI_FONT_SIZE)
+        # 임무 할당 분석 (gui_evaluation/alloc_recorder.py · alloc_plots.py): 기록기를 붙이고, Alloc Plots 버튼 / G 키 / 에피소드 끝(옵션)에 그래프 저장
+        self.figures_dir = figures_dir or os.path.join(REPO_ROOT, "results", "gui_evaluation")
         self.auto_save_plots = auto_save_plots
         self._plot_proc = None
         self._plot_q = None
@@ -358,7 +358,7 @@ class GridMap:
                     self.reset_sim()
                 else:
                     try:
-                        from evaluation.checkpoint_policy import CheckpointPolicy
+                        from eval_common.checkpoint_policy import CheckpointPolicy
                         # GUI sim 의 설정 (main 전용 yaml) 을 그대로 쓴다. 관측 차원 / 네트워크 구조가 다르면 에러
                         policy = CheckpointPolicy(path, env_config=dict(self.sim.cfg), mode=self.model_mode,
                                                   model_config=self.model_config, env_priority=True)

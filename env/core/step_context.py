@@ -1,6 +1,6 @@
 """StepContext — 한 tick 동안 일어난 사건 정보 묶음.
 
-RoleSimulation._step_role() 이 채운다 (last_ctx). evaluation/alloc_recorder.py 가 이 기록을 읽는다.
+RoleSimulation._step_role() 이 채운다 (last_ctx). gui_evaluation/alloc_recorder.py 가 이 기록을 읽는다.
 """
 from dataclasses import dataclass, field
 from typing import List, Set, Optional

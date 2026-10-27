@@ -1,6 +1,6 @@
 """탐색/구조 시뮬레이션 GUI 실행 진입점 (UAV, 고정 고도 2D 격자).
 
-- 설정은 training/config/ 의 main 전용 yaml (env_main.yaml + role_main.yaml + explore_main.yaml + rescue_main.yaml,
+- 설정은 gui_evaluation/config/ 의 main 전용 yaml (env_main.yaml + role_main.yaml + explore_main.yaml + rescue_main.yaml,
   학습과 같은 순서로 합침) 만 읽는다. 학습 (python -m training.train) 은 *_main 이 아닌 원본 yaml 을 읽는다.
   GUI / 체크포인트 같은 main 전용 값은 env_main.yaml 의 main: 섹션.
 - 결정 (계층 구조: Role 선택 -> Rescue / Explore 할당 / Return -> BFS 경로 추종, env/role/simulation.py) 은 기본적으로
@@ -11,19 +11,17 @@
 
 조작: Space=재생/정지, N 또는 →=한 스텝, 1~9=로봇 선택, O=관측 콘솔 출력, M=정책 토글 (rules -> random -> model),
       P 또는 B=BFS 경로 표시 토글, V=센서 / 통신 범위 표시 토글, C=덩어리 · 구간 색칠, L=할당 연결선, H=범례,
-      G=임무 할당 분석 그래프 저장 (figures/)
+      G=임무 할당 분석 그래프 저장 (results/gui_evaluation/)
 """
 import os
 
 from env.role.simulation import RoleSimulation
 from gui.grid_map import GridMap
-from evaluation.checkpoint_policy import CheckpointPolicy, resolve_checkpoint
-from training.config_loader import load_config, reward_settings_line
+from eval_common.checkpoint_policy import CheckpointPolicy, resolve_checkpoint
+from training.config_loader import MAIN_FILES, load_config, reward_settings_line
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(ROOT, "training", "config")
-# main 전용 yaml — 병합 순서는 학습 (training/config_loader.py DEFAULT_FILES) 과 같다
-MAIN_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env_main.yaml", "role_main.yaml", "explore_main.yaml", "rescue_main.yaml")]
+# main 전용 yaml (gui_evaluation/config/) — 병합 순서는 학습 (training/config_loader.py DEFAULT_FILES) 과 같다
 
 
 def print_settings(cfg, env, main_cfg):
@@ -63,7 +61,7 @@ def main():
         except RuntimeError as e:                            # 관측 차원 / 네트워크 구조가 다른 체크포인트
             raise SystemExit(f"[main] 모델 로드 실패\n{e}")
     GridMap(RoleSimulation(env), cell_size=int(main_cfg.get("cell_size", 21)), model_policy=policy, model_mode=model_mode,
-            figures_dir=os.path.join(ROOT, main_cfg.get("figures_dir", "figures")),
+            figures_dir=os.path.join(ROOT, main_cfg.get("figures_dir", os.path.join("results", "gui_evaluation"))),
             auto_save_plots=bool(main_cfg.get("auto_save_plots", False)),
             obs_panel_width=int(main_cfg.get("inspector_width", 560)), font_size=int(main_cfg.get("font_size", 17)),
             fps=int(main_cfg.get("fps", 60)), speed_index=int(main_cfg.get("speed_index", 2)),

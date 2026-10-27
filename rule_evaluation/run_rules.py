@@ -1,8 +1,8 @@
 """그리디 정책 (policies/role_rules.py RuleDecider) 으로 계층 구조 env 를 끝까지 돌리는 baseline / 점검 스크립트.
 
-    python -m evaluation.run_rules                     # env.yaml + role.yaml + explore.yaml + rescue.yaml, seed 0..199, 그리디
-    python evaluation/run_rules.py --episodes 50 --policy random
-    python -m evaluation.run_rules --episodes 20 --tag check   # 결과 파일 이름 = *_check (기준선 파일을 덮어쓰지 않음)
+    python -m rule_evaluation.run_rules                     # env.yaml + role.yaml + explore.yaml + rescue.yaml, seed 0..199, 그리디
+    python rule_evaluation/run_rules.py --episodes 50 --policy random
+    python -m rule_evaluation.run_rules --episodes 20 --tag check   # 결과 파일 이름 = *_check (기준선 파일을 덮어쓰지 않음)
 
 에피소드 k 는 seed k 로 맵 / 조난자 / 골든타임 고정. 출력: 구조율 · 발견율 · 탐색률, 역할 비율 시계열, 이벤트별 횟수,
 평균 결정 빈도, explore 2 단계 통계 (1·2 단계 결정 수, 덩어리당 평균 m, 쪼개짐 · 합쳐짐, 통신 이탈 m 감소,

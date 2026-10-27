@@ -1,4 +1,4 @@
-"""임무 할당 기록기 — 에피소드 동안 UAV 상태 / 이벤트 / 조난자 / 팀 지표를 모은다 (evaluation/alloc_plots.py 의 입력).
+"""임무 할당 기록기 — 에피소드 동안 UAV 상태 / 이벤트 / 조난자 / 팀 지표를 모은다 (gui_evaluation/alloc_plots.py 의 입력).
 
 RoleSimulation 에 붙여 쓴다:  sim.recorder = AllocRecorder(); sim.recorder.on_reset(sim)
 그러면 sim.reset() 이 on_reset 을, 매 tick 의 _step_role() 끝 (step / step_explicit 공통)이 on_step 을 호출한다.

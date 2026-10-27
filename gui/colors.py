@@ -1,4 +1,4 @@
-"""UAV 색 — GUI(맵 / 카드 / 경로)와 분석 그래프(evaluation/alloc_plots.py)가 모두 여기 한 곳의 정의를 쓴다.
+"""UAV 색 — GUI(맵 / 카드 / 경로)와 분석 그래프(gui_evaluation/alloc_plots.py)가 모두 여기 한 곳의 정의를 쓴다.
 
 배경 의미색 (gui/style.py: frontier 초록 / 미탐색 파랑 / 생존자 노랑 / 장애물 · 회색) 과 겹치지 않게
 빨강 · 보라 · 주황 · 청록 · 갈색 · 분홍 · 남색 계열, 옆 번호끼리 명도 차이가 나게 배치했다.

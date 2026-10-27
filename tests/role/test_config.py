@@ -12,7 +12,7 @@ import os
 
 import yaml
 
-from training.config_loader import CONFIG_DIR, load_config, merge, reward_settings_line
+from training.config_loader import CONFIG_DIR, MAIN_CONFIG_DIR, load_config, merge, reward_settings_line
 
 BASES = ("env", "role", "explore", "rescue")
 ALLOWED = ("main.", "env_config.gui.", "env_config.depot")       # 값 차이 허용 (GUI · 실행 관련)
@@ -29,7 +29,8 @@ def leaves(d, p=()):
 
 
 def read(name):
-    with open(os.path.join(CONFIG_DIR, name)) as f:
+    """학습용 yaml 은 training/config/, *_main.yaml 은 gui_evaluation/config/."""
+    with open(os.path.join(MAIN_CONFIG_DIR if name.endswith("_main.yaml") else CONFIG_DIR, name)) as f:
         return yaml.safe_load(f) or {}
 
 

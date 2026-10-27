@@ -1,7 +1,7 @@
 """확장성 실험: 체크포인트 하나로 UAV 수 N 을 바꿔가며 평가 (학습 때와 다른 N 실행).
 
-    python evaluation/scale_eval.py <checkpoint>                          # N = 2,3,4,5,6,8, seed 0..199
-    python evaluation/scale_eval.py <checkpoint> --n 2,4,8 --seeds 0-49
+    python scale_evaluation/scale_eval.py <checkpoint>                          # N = 2,3,4,5,6,8, seed 0..199
+    python scale_evaluation/scale_eval.py <checkpoint> --n 2,4,8 --seeds 0-49
 
 행동 선택 = 세 헤드 greedy (evaluate 기본값), 에피소드 k 는 seed k 로 맵 / 조난자 / 골든타임 고정
 -> N 끼리 같은 상황에서 비교된다. 센서 / 통신 범위는 체크포인트 첫 UAV 값 복제, n_hop 등 나머지는 체크포인트 값.
@@ -35,8 +35,8 @@ def main():
     args = ap.parse_args()
 
     from env.role.simulation import RoleSimulation
-    from evaluation.checkpoint_policy import CheckpointPolicy, load_train_config, resolve_checkpoint, with_n_agents
-    from evaluation.evaluate import parse_seeds, run_episode
+    from eval_common.checkpoint_policy import CheckpointPolicy, load_train_config, resolve_checkpoint, with_n_agents
+    from eval_common.episode import parse_seeds, run_episode
 
     ckpt = resolve_checkpoint(os.path.join(_CALLER_CWD, os.path.expanduser(args.checkpoint)))
     train_env = load_train_config(ckpt)["env_config"]
