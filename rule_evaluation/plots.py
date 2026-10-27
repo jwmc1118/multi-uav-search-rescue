@@ -19,7 +19,17 @@ from eval_common.io import latex_table
 LABEL = {"rescue_rate": "Rescue rate", "expire_rate": "Expire rate", "discover_rate": "Discover rate",
          "explored": "Explored ratio", "episode_len": "Episode length", "rescue_time_mean": "Mean rescue time",
          "golden_slack_mean": "Golden-time slack", "same_cell": "Same-cell overlaps", "conflict_cross": "Cross-group conflicts",
-         "escalations": "Escalations", "rescued_per_uav": "Rescued per UAV", "infer_ms_per_decision": "Inference (ms/decision)"}
+         "escalations": "Escalations", "rescued_per_uav": "Rescued per UAV", "infer_ms_per_decision": "Inference (ms/decision)",
+         "trunc_decisions_S": "Truncated decisions (S)", "trunc_frac_S": "Truncated-decision ratio (S)",
+         "dropped_S": "Dropped candidates (S)", "dropped_S_per_dec": "Dropped per decision (S)",
+         "dropped_urgent_S": "Dropped urgent (S)", "best_dropped_S": "EDF choice dropped (S)",
+         "trunc_decisions_K": "Truncated decisions (K)", "trunc_frac_K": "Truncated-decision ratio (K)",
+         "dropped_K": "Dropped blobs (K)", "dropped_K_cells": "Dropped frontier cells (K)",
+         "s_nodes_overflow": "S-node overflow", "ub_loose": r"Upper bound $UB_\mathrm{loose}$",
+         "ub_greedy": r"$UB_\mathrm{greedy}$", "rescue_over_ub": r"Rescue rate / $UB_\mathrm{loose}$",
+         "group_size_mean": "Mean comm. group size", "n_groups_mean": "Mean number of groups",
+         "isolated_frac": "Isolated-UAV ratio", "expire_undiscovered_rate": "Expired undiscovered",
+         "expire_unassigned_rate": "Expired unassigned", "expire_assigned_rate": "Expired while assigned"}
 POLICIES = ("rule", "model")
 
 
@@ -135,10 +145,13 @@ def _fmt(x, digits=3):
 
 
 def summary_table(summary, path, n):
-    header = ["Metric", "Rule", "Learned", r"$\Delta$ (learned $-$ rule) [95\% CI]", "$p$"]
+    header = ["Metric", "Rule", "Learned", r"$\Delta$ (learned $-$ rule) [95\% CI]", r"$d_z$ [95\% CI]", "$p$",
+              r"min $p$"]
     rows = []
     for r in summary:
-        d = 1 if r["metric"] in ("episode_len", "rescue_time_mean", "same_cell", "conflict_cross", "escalations") else 3
+        d = 1 if r["metric"] in ("episode_len", "rescue_time_mean", "same_cell", "conflict_cross", "escalations",
+                                 "trunc_decisions_S", "dropped_S", "dropped_urgent_S", "best_dropped_S", "trunc_decisions_K",
+                                 "dropped_K", "dropped_K_cells", "s_nodes_overflow") else 3
         cells = {p: f"{_fmt(r[f'{p}_mean'], d)} $\\pm$ {_fmt(r[f'{p}_std'], d)}" for p in POLICIES}
         better = None
         if r["rule_mean"] == r["rule_mean"] and r["model_mean"] == r["model_mean"] and r["rule_mean"] != r["model_mean"]:
@@ -146,12 +159,18 @@ def summary_table(summary, path, n):
                 ("model" if r["model_mean"] < r["rule_mean"] else "rule")
         if better:
             cells[better] = f"\\textbf{{{cells[better]}}}"
-        rows.append([LABEL.get(r["metric"], r["metric"]), cells["rule"], cells["model"],
-                     f"{_fmt(r['diff_mean'], d)} [{_fmt(r['diff_ci_lo'], d)}, {_fmt(r['diff_ci_hi'], d)}]",
-                     _fmt(r["p_wilcoxon"], 3)])
-    return latex_table(path, header, rows, "lcccc",
+        rows.append([LABEL.get(r["metric"], r["metric"].replace("_", r"\_")), cells["rule"], cells["model"],
+                     f"{_fmt(r['diff_mean'], d)} [{_fmt(r['diff_ci_lo'], d)}, {_fmt(r['diff_ci_hi'], d)}]"
+                     + (r"$^{\ddagger}$" if r.get("unanimous") else ""),
+                     f"{_fmt(r.get('d_z'), 2)} [{_fmt(r.get('d_z_ci_lo'), 2)}, {_fmt(r.get('d_z_ci_hi'), 2)}]",
+                     _fmt(r["p_wilcoxon"], 3) + (r"$^{\dagger}$" if r.get("p_note") else ""), _fmt(r.get("p_min"), 4)])
+    return latex_table(path, header, rows, "lcccccc",
                        caption=f"Rule vs.\\ learned policy (mean $\\pm$ std over {n} paired episodes; "
-                               f"$\\Delta$ with 95\\% bootstrap CI; Wilcoxon signed-rank $p$).", label="tab:rule_vs_model")
+                               f"$\\Delta$ with 95\\% bootstrap CI; effect size $d_z$ = mean / std of paired differences "
+                               f"with bootstrap CI; Wilcoxon signed-rank $p$ and the smallest attainable $p$ for the number of "
+                               f"non-zero differences. $^{{\\dagger}}$fewer than 6 non-zero differences: $p < 0.05$ is "
+                               f"unattainable. $^{{\\ddagger}}$all paired differences favour the same policy).",
+                       label="tab:rule_vs_model")
 
 
 def make_all(per, summary, tstats, conv, out_dir, fig_cfg):

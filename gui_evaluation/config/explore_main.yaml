@@ -34,9 +34,10 @@ env_config:
   #   Δcov^(i) = 팀 전역에서 이번 step 처음 관측된 free 셀 중 i 가 본 것 (같은 step 에 k 대가 보면 1/k 씩)
   #   학습: 옵션 단위 할인 누적 R = Σ_{t0 <= t < t1} γ^(t - t0) r (t1 = 다음 explore 결정 / 역할 변경 / 에피소드 끝),
   #   bootstrap 없음, A = R - V (γ = env.yaml 최상위 gamma)
+  #   (보상 가중치는 GUI · 평가의 행동 선택 (규칙 / 학습 모델) 에 영향 없음 — 표시되는 보상 값만 바뀐다. 학습 값과 맞춰 둔다)
   rewards:
     explore:
-      w_mult: 0.2   # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배
+      w_mult: 0.75  # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배 (training/config/explore.yaml 과 같은 값)
 
 # ---- 네트워크 (models/role/net.py): frontier 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정) — 1 단계만
 #   노드 U (그룹의 EXPLORE UAV) · K (덩어리 슬롯), 관계 K→U, U→K, U→U, K→K (kNN), attention 집계

@@ -46,7 +46,9 @@ training/                       학습
 eval_common/                    평가 공용
 ├── checkpoint_policy.py        체크포인트 로드 + 실행 (GUI / 평가 공용, 다른 N · 맵 크기로 실행)
 ├── episode.py                  에피소드 실행 · 지표 (METRICS, RulePolicy, run_episode, run_episode_detailed, 초기 상태 지문)
-├── stats.py                    평균 · 표준편차, bootstrap CI, 짝 차이 · 승/무/패 · Wilcoxon
+├── stats.py                    평균 · 표준편차, bootstrap CI, 짝 차이 · 승/무/패 · Wilcoxon (+ 최소 p, 효과 크기 d_z)
+├── light_policy.py             경량 체크포인트 정책 (ray / trainer 없이 가중치만 torch 로 — 병렬 워커용, CheckpointPolicy 와 같은 결정)
+├── parallel.py                 seed 단위 병렬 실행 (spawn, CPU, 워커당 torch 스레드 1, 체크포인트 한 번만 로드)
 ├── paper_style.py              논문 그림 스타일 (serif, Okabe–Ito, PDF + PNG 300 dpi + 원자료 CSV)
 └── io.py                       결과 폴더 (<시각>_<tag>), CSV / JSON, booktabs 표, git commit 기록
 gui_evaluation/                 GUI 실행 설정 · 분석
@@ -56,6 +58,7 @@ rule_evaluation/                규칙 정책 기준선 · 비교
 ├── config/rule.yaml            main_rule.py 설정 (seed, 지표, bootstrap, 그림)
 ├── compare.py, plots.py        main_rule.py 비교 로직 · 그림 / 표
 ├── evaluate.py                 체크포인트 평가 (--compare: 학습 vs 규칙)
+├── slot_analysis.py            S / K 슬롯 잘림 분석 (규칙 정책, s_max 비교, 조난자 수 · 시간대별)
 ├── run_rules.py                규칙 정책 200 seed 기준선           -> results/rules/
 └── upper_bound.py              이론적 상한 / 실패 원인 분해         -> results/upper_bound/
 scale_evaluation/               확장성
@@ -93,8 +96,11 @@ python -m rule_evaluation.upper_bound [--checkpoint <checkpoint>]
 python -m scale_evaluation.scale_eval <checkpoint> --n 2,3,4,5,6,8
 
 # 논문용 비교 (GUI 없음, CPU 로 돌려도 됨: CUDA_VISIBLE_DEVICES="")
-python main_rule.py --checkpoint <checkpoint> [--seeds 0-99] [--mode greedy|sample] [--tag name]
-python main_scale.py --checkpoint <checkpoint> [--n 2,3,4,5,6,8,10] [--seeds 0-49] [--preset default|fixed] [--tag name]
+#   --workers W: seed 단위 병렬 (기본 = CPU 코어 수 - 2, yaml workers). 결과는 workers 수와 무관 (추론 시간 제외)
+python main_rule.py --checkpoint <checkpoint> [--seeds 0-99] [--mode greedy|sample] [--tag name] [--workers 16]
+python main_scale.py --checkpoint <checkpoint> [--n 2,3,4,5,6,8,10] [--seeds 0-49] [--preset default|fixed] [--tag name] [--workers 16]
+python -m rule_evaluation.slot_analysis [--s_max 16,24,32,48] [--seeds 0-49] [--workers 16]   # 슬롯 잘림 분석 (규칙 정책)
+python -m tests.eval.test_parallel_equiv --checkpoint <checkpoint>   # 병렬 = 순차, 경량 정책 = ray 정책
 
 # 점검
 python -m tests.role.test_role_env
@@ -153,6 +159,25 @@ results/
 - 환경 설정: 체크포인트 `params.json` 의 env_config → yaml `env.files` → `env.overrides` (main_scale 은 그 뒤 N 별 크기 조정).
   관측 shape 를 정하는 키는 체크포인트 값으로 고정 (main_scale 은 rows / cols / max_targets / max_episode_len 만 풀어 줌).
 - 같은 seed (main_scale 은 같은 (seed, N)) 에서 두 정책의 초기 상태 (맵 · depot · 조난자 · 골든타임 · UAV) 가 같은지 확인한다.
+
+결과 열 (per_episode.csv = 에피소드 하나, summary.csv / scale.csv = 지표마다 정책별 평균 · 표준편차 · CI + 짝 비교):
+
+| 열 | 뜻 |
+|---|---|
+| rescue_rate / expire_rate / discover_rate / explored | 구조 · 만료 · 발견 조난자 비율 (N_T 대비), 탐색한 free 셀 비율 |
+| rescue_time_mean / golden_slack_mean | 구조 시각 평균, (마감 - 구조 시각) / 골든타임 평균 (구조된 조난자) |
+| rescued_per_uav / decisions / infer_ms_per_decision | UAV 당 구조 수, 결정 수, 모델 추론 시간 (CPU, 워커당 스레드 1) |
+| role_decisions, trunc_decisions_S, trunc_frac_S | 역할 결정 수, 그중 할당 가능 후보 > s_max 인 결정 수 · 비율 |
+| dropped_S (= dropped_reachable_S), dropped_S_per_dec | 잘린 할당 가능 후보 수 합 · 결정당 (후보 조건이 골든타임 안 도달이라 reachable 과 같음) |
+| dropped_urgent_S, best_dropped_S | 잘린 후보 중 남은 후보보다 급한 수, EDF 선택이 잘린 쪽에 있던 결정 수 |
+| s1_decisions, trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells | explore 1 단계 결정 기준 덩어리 > k_max 잘림 (덩어리 수 · frontier 셀 수) |
+| s_nodes_overflow | 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (예전 survivor_truncated, S 노드 넘침) |
+| ub_loose / ub_greedy / rescue_over_ub | depot 에서 골든타임 안 도달 가능 비율, 전지적 EDF 스케줄 구조율, 구조율 / ub_loose |
+| group_size_mean / n_groups_mean / isolated_frac | 통신 그룹 평균 크기 · 수, 혼자인 UAV 비율 (step 평균) |
+| expire_undiscovered / unassigned / assigned_rate | 만료 원인: 미발견 / 발견했지만 미배정 / 맡고 있던 중 (N_T 대비) |
+| diff_mean, diff_ci_lo/hi, model_win / tie / model_loss | 짝 차이 (학습 - 규칙) 평균 · 95% bootstrap CI, 모델 기준 승 / 무 / 패 비율 |
+| d_z, d_z_ci_lo/hi | 효과 크기 Cohen's d_z = 평균 / 표준편차 (짝 차이) · bootstrap CI |
+| p_wilcoxon, p_min, n_nonzero, p_note, unanimous | Wilcoxon p, 도달 가능한 최소 p (= 2 / 2^n_nonzero), n < 6 표시, 모든 짝이 한쪽 우세 ("model" / "rule") |
 
 ## 설치 (새 컴퓨터, Windows + Anaconda 기준)
 

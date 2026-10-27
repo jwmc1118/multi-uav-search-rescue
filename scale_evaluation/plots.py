@@ -5,7 +5,9 @@ x 축 = UAV 수 N (목록 순서대로 같은 간격), N_ref 는 세로 점선. 
     2 fig_diff_vs_n        짝 차이 (모델 - 규칙) 구조율 · 발견율 평균 · 95% CI, 0 기준선
     3 fig_rescued_per_uav  UAV 당 구조 수 — 정책별 평균 · 95% CI
     4 fig_inference        모델 추론 시간 (ms / 결정, CPU) 평균 · 95% CI
-    scale_table.tex        N 별 맵 / 조난자, 구조율 (규칙 · 모델, 평균 ± 표준편차), 차이 [95% CI], p (더 좋은 평균 굵게)
+    5 fig_upper_bound      구조율 (규칙 · 모델) 과 이론적 상한 UB_loose (+ 참고 UB_greedy), 상한 대비 구조율 (구조율 / UB_loose)
+    scale_table.tex        N 별 맵 / 조난자, 구조율 (규칙 · 모델, 평균 ± 표준편차), 차이 [95% CI], d_z [95% CI], p, 최소 p
+                           (더 좋은 평균 굵게, † = 0 아닌 차이 < 6 개라 p < 0.05 불가, ‡ = 모든 짝 차이가 같은 쪽)
 """
 import os
 
@@ -119,9 +121,33 @@ def fig_inference(infer, summary, ns, n_ref, out, secondary):
     return ps.save(fig, os.path.join(out, "fig_inference"), infer)
 
 
+def fig_upper_bound(summary, ns, n_ref, out, width, secondary):
+    fig, axes = ps.figure(width, 2.6 if secondary else 2.3, ncols=2)
+    ub = _by(summary, "ub_loose")
+    x = _axis(axes[0], ns, n_ref, _info(summary), secondary)
+    mu = np.array([ub[n]["rule_mean"] for n in ns])                       # 상한은 정책과 무관 (같은 (seed, N))
+    lo = np.array([ub[n]["rule_ci_lo"] for n in ns])
+    hi = np.array([ub[n]["rule_ci_hi"] for n in ns])
+    axes[0].plot(x, mu, color="k", lw=1.0, marker="^", label=r"$UB_\mathrm{loose}$")
+    axes[0].fill_between(x, lo, hi, color="k", alpha=0.12, linewidth=0)
+    data = [{"n_agents": n, "metric": "ub_loose", "policy": "-", "mean": a, "ci_lo": b, "ci_hi": c}
+            for n, a, b, c in zip(ns, mu, lo, hi)]
+    ug = _by(summary, "ub_greedy")
+    if ug:                                                                # 전지적 EDF 스케줄 (참고 — UB_loose 가 1 에 붙을 때 유용)
+        mg = np.array([ug[n]["rule_mean"] for n in ns])
+        axes[0].plot(x, mg, color="k", lw=0.9, ls=":", marker="v", label=r"$UB_\mathrm{greedy}$")
+        data += [{"n_agents": n, "metric": "ub_greedy", "policy": "-", "mean": a, "ci_lo": ug[n]["rule_ci_lo"],
+                  "ci_hi": ug[n]["rule_ci_hi"]} for n, a in zip(ns, mg)]
+    data += _policy_panel(axes[0], summary, "rescue_rate", ns, n_ref, False)
+    axes[0].set_ylabel("Rescue rate")
+    data += _policy_panel(axes[1], summary, "rescue_over_ub", ns, n_ref, secondary)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncol=4)
+    return ps.save(fig, os.path.join(out, "fig_upper_bound"), data)
+
+
 def scale_table(summary, path, n_seeds, metric="rescue_rate"):
     rows_by = _by(summary, metric)
-    header = ["$N$", "Map", "Survivors", "Rule", "Learned", r"$\Delta$ [95\% CI]", "$p$"]
+    header = ["$N$", "Map", "Survivors", "Rule", "Learned", r"$\Delta$ [95\% CI]", r"$d_z$ [95\% CI]", "$p$", r"min $p$"]
     rows = []
     for n in sorted(rows_by):
         r = rows_by[n]
@@ -131,12 +157,16 @@ def scale_table(summary, path, n_seeds, metric="rescue_rate"):
                 ("model" if r["model_mean"] < r["rule_mean"] else "rule")
             cells[better] = f"\\textbf{{{cells[better]}}}"
         rows.append([str(n), f"{r['rows']}$\\times${r['cols']}", r["survivors"].replace("–", "--"), cells["rule"],
-                     cells["model"], f"{_fmt(r['diff_mean'])} [{_fmt(r['diff_ci_lo'])}, {_fmt(r['diff_ci_hi'])}]",
-                     _fmt(r["p_wilcoxon"])])
-    return latex_table(path, header, rows, "rcccccc",
+                     cells["model"], f"{_fmt(r['diff_mean'])} [{_fmt(r['diff_ci_lo'])}, {_fmt(r['diff_ci_hi'])}]"
+                     + (r"$^{\ddagger}$" if r.get("unanimous") else ""),
+                     f"{_fmt(r.get('d_z'), 2)} [{_fmt(r.get('d_z_ci_lo'), 2)}, {_fmt(r.get('d_z_ci_hi'), 2)}]",
+                     _fmt(r["p_wilcoxon"]) + (r"$^{\dagger}$" if r.get("p_note") else ""), _fmt(r.get("p_min"), 4)])
+    return latex_table(path, header, rows, "rcccccccc",
                        caption=f"{LABEL[metric]} vs.\\ number of UAVs (mean $\\pm$ std over {n_seeds} paired episodes per $N$; "
-                               f"$\\Delta$ = learned $-$ rule with 95\\% bootstrap CI; Wilcoxon signed-rank $p$).",
-                       label="tab:scale")
+                               f"$\\Delta$ = learned $-$ rule with 95\\% bootstrap CI; effect size $d_z$ with bootstrap CI; "
+                               f"Wilcoxon signed-rank $p$ and the smallest attainable $p$. $^{{\\dagger}}$fewer than 6 non-zero "
+                               f"differences: $p < 0.05$ is unattainable. $^{{\\ddagger}}$all paired differences favour the same "
+                               f"policy).", label="tab:scale")
 
 
 def make_all(summary, infer, ns, n_ref, out_dir, fig_cfg, secondary):
@@ -147,4 +177,6 @@ def make_all(summary, infer, ns, n_ref, out_dir, fig_cfg, secondary):
     files += fig_diff_vs_n(summary, ns, n_ref, fdir, width, secondary)
     files += fig_rescued_per_uav(summary, ns, n_ref, fdir, secondary)
     files += fig_inference(infer, summary, ns, n_ref, fdir, secondary)
+    if any(r["metric"] == "ub_loose" for r in summary) and any(r["metric"] == "rescue_over_ub" for r in summary):
+        files += fig_upper_bound(summary, ns, n_ref, fdir, width, secondary)
     return files

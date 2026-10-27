@@ -306,6 +306,9 @@ class CheckpointPolicy:
         cfg["explore"] = False
         cfg["num_gpus"] = 0            # 추론은 CPU (학습 때 num_gpus: 1 이어도)
         cfg["env_config"] = copy.deepcopy(env_config)
+        if env_config.get("s_max") is not None:        # S 노드 수는 env_config.s_max = model.gnn.s_max (RoleNet 이 확인). 가중치는 무관
+            mc = cfg.setdefault("model", {}).setdefault("custom_model_config", {})
+            mc["gnn"] = dict(mc.get("gnn") or {}, s_max=int(env_config["s_max"]))
         # RLlib 1.3 TorchPolicy 는 num_gpus 와 상관없이 CUDA 가 보이면 모델을 GPU 에 올린다 -> 학습이 GPU 를 쓰는 중이면
         # CUDA out of memory. 추론 trainer 를 만드는 동안만 CUDA 를 안 보이게 해서 CPU 에 올린다
         import torch

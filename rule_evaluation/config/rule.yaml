@@ -9,6 +9,7 @@ checkpoint: null                # 학습 체크포인트 (CLI --checkpoint 가 �
 seeds: "0-99"                   # 에피소드 seed 목록 ('0-99' / '0,3,7' / '0-4,10') — 두 정책이 같은 seed 로 같은 초기 상태
 mode: greedy                    # 학습 모델 행동 선택: greedy (세 head argmax) | sample (학습 때와 같은 확률 정책)
 tag: rule_vs_model              # 결과 폴더 이름 꼬리
+workers: null                   # 병렬 워커 수 (seed 단위, CPU, torch 스레드 1). null = CPU 코어 수 - 2 (최소 1). CLI --workers
 
 env:
   files: []                     # 체크포인트 env_config 위에 차례로 덮을 yaml 파일 (그 파일의 env_config), 예: [training/config/env.yaml]
@@ -25,7 +26,22 @@ metrics:                        # 에피소드 끝 지표 (eval_common/episode.p
   - same_cell
   - conflict_cross
   - escalations
-lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations]   # 나머지는 클수록 좋음
+  # 슬롯 잘림 (eval_common/episode.py slot_snapshot — S = 역할 결정, K = explore 1 단계 결정 기준)
+  - trunc_decisions_S           # 할당 가능 후보 수 > s_max 인 결정 수
+  - trunc_frac_S                # 그 결정 비율
+  - dropped_S                   # 잘린 할당 가능 후보 수 합 (= dropped_reachable_S: 후보 조건이 골든타임 안 도달)
+  - dropped_S_per_dec           # 결정당 잘린 후보 수
+  - dropped_urgent_S            # 잘린 후보 중 남은 후보의 최소 slack 보다 급한 후보 수 합
+  - best_dropped_S              # EDF 로 고를 생존자가 잘린 쪽에 있던 결정 수
+  - trunc_decisions_K           # 덩어리 수 > k_max 인 1 단계 결정 수
+  - trunc_frac_K
+  - dropped_K                   # 잘린 덩어리 수 합
+  - dropped_K_cells             # 잘린 덩어리 frontier 셀 수 합
+  - s_nodes_overflow            # (예전 survivor_truncated) 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (S 노드 넘침)
+lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations,
+                  trunc_decisions_S, trunc_frac_S, dropped_S, dropped_S_per_dec, dropped_urgent_S, best_dropped_S,
+                  trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells, s_nodes_overflow]
+                  # 나머지는 클수록 좋음
 
 bootstrap:
   n: 10000                      # 요약 · 짝 차이 95% CI bootstrap 횟수

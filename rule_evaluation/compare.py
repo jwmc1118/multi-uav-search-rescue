@@ -1,9 +1,12 @@
 """규칙 정책 vs 학습 모델 비교 로직 (main_rule.py) — 같은 seed 몬테카를로.
 
-    build_policies(cfg)        체크포인트 env_config -> yaml env.files -> env.overrides 로 병합한 설정으로 CheckpointPolicy
+    run_parallel(cfg, seeds, workers)   seed 단위 병렬 실행 (eval_common/parallel.py, 경량 체크포인트 정책) -> per / ts 행,
+                               실제 env_config, 강제된 키, 체크포인트 경로. 같은 seed 의 초기 상태 지문이 다르면 AssertionError
+    build_policies(cfg)        (순차 · ray 경로) 체크포인트 env_config -> yaml env.files -> env.overrides 로 병합한 설정으로 CheckpointPolicy
                                (env_priority=False: SHAPE_KEYS 는 체크포인트 값) 와 RulePolicy, 둘이 같이 쓸 RoleSimulation
     run(sim, policies, seeds)  정책마다 seed 목록 실행 -> per_episode / timeseries 행. 같은 seed 의 초기 상태 지문이 다르면 AssertionError
     summarize(...)             지표별 정책 평균 ± 표준편차 · 95% bootstrap CI, 짝 차이 (모델 - 규칙) 평균 · CI, 승 / 무 / 패, Wilcoxon p
+                               (+ 도달 가능한 최소 p · n 부족 표시, 전부 같은 쪽 (unanimous), 효과 크기 d_z · CI)
     timeseries_stats(...)      step 별 평균 · CI (누적 지표는 에피소드가 끝난 뒤 마지막 값 유지, 역할 비율은 끝난 뒤 제외)
     convergence(...)           앞 k 개 에피소드의 구조율 짝 차이 평균 · CI (k = 1..n)
 """
@@ -52,6 +55,25 @@ def build_policies(cfg, env_config=None, quiet=False, free_keys=()):
     return sim, {"rule": RulePolicy(), "model": model}, ckpt, model.env_config, list(model.warnings)
 
 
+def run_parallel(cfg, seeds, workers, env_config=None, free_keys=(), timeseries=True, label="rule"):
+    """반환 (per_episode, timeseries, 실제 env_config, 강제된 키 목록, 체크포인트 경로). 결과는 seed 순 (workers 수와 무관)."""
+    from eval_common.checkpoint_policy import load_train_config, resolve_checkpoint, runtime_env_config
+    from eval_common.parallel import Task, run_tasks
+    ckpt = resolve_checkpoint(_abs(cfg["checkpoint"]))
+    train_env = load_train_config(ckpt).get("env_config", {})
+    env = env_config if env_config is not None else merged_env_config(train_env, cfg.get("env") or {})
+    env = dict(env, events=dict(env.get("events") or {}, log_dir=None))
+    used, warnings = runtime_env_config(train_env, env, free_keys)
+    res = run_tasks(ckpt, cfg.get("mode", "greedy"), [Task(None, env, tuple(free_keys), s, timeseries) for s in seeds],
+                    workers, label)
+    per = [r for x in res for r in x.per]
+    per.sort(key=lambda r: (POLICIES.index(r["policy"]), r["seed"]))
+    ts = [r for x in res for r in x.ts]
+    ts.sort(key=lambda r: (POLICIES.index(r["policy"]), r["seed"], r["step"]))
+    assert all(x.env_used == res[0].env_used for x in res) and res[0].env_used == used
+    return per, ts, used, warnings, ckpt
+
+
 def run(sim, policies, seeds, label="", timeseries=True):
     """반환 (per_episode [dict], timeseries [dict]). 정책마다 같은 seed 순서로, seed 별 초기 상태 지문 일치 확인."""
     per, ts, sigs = [], [], {}
@@ -83,7 +105,9 @@ def summarize(per, metrics, lower_is_better, boot):
         pr = paired([by["rule"][s][m] for s in seeds], [by["model"][s][m] for s in seeds], boot["n"], boot["alpha"],
                     boot["seed"], higher_better=m not in lower_is_better)
         row.update({"diff_mean": pr["diff_mean"], "diff_ci_lo": pr["diff_lo"], "diff_ci_hi": pr["diff_hi"],
-                    "model_win": pr["win"], "tie": pr["tie"], "model_loss": pr["loss"], "p_wilcoxon": pr["p_wilcoxon"]})
+                    "model_win": pr["win"], "tie": pr["tie"], "model_loss": pr["loss"], "p_wilcoxon": pr["p_wilcoxon"],
+                    "n_nonzero": pr["n_eff"], "p_min": pr["p_min"], "p_note": pr["p_note"], "unanimous": pr["unanimous"],
+                    "d_z": pr["d_z"], "d_z_ci_lo": pr["d_z_lo"], "d_z_ci_hi": pr["d_z_hi"]})
         rows.append(row)
     return rows
 

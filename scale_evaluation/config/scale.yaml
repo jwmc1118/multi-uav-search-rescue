@@ -2,7 +2,7 @@
 # 실행: python main_scale.py --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--n 2,4,8] [--seeds 0-49] [--preset fixed] [--tag name]
 # 환경 설정 병합 순서: 체크포인트 params.json 의 env_config -> env.files -> env.overrides -> N 별 크기 조정 (presets)
 #   크기 조정 후에도 체크포인트 값으로 고정: state_size, local_channels, global_downsample, s_max, cluster.k_max, explore.n_sub_max
-#   (학습 슬롯 수 유지 -> 넘치는 생존자 / 덩어리는 잘림, per_episode 의 survivor_truncated / blob_truncated 로 기록)
+#   (학습 슬롯 수 유지 -> 넘치는 생존자 / 덩어리는 잘림, per_episode 의 trunc_* / dropped_* 로 기록)
 #   입력 정규화는 새 맵 기준: d_max = rows + cols (env_config.d_max 를 null 로), 시간 = 새 max_episode_len
 #   조난자 슬롯 max_targets = max(체크포인트 값, 조정된 조난자 수 상한) (모델 파라미터와 무관)
 # 결과: results/scale_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  scale.csv, per_episode.csv, scale_table.tex,
@@ -14,6 +14,7 @@ n_ref: null                     # 기준 UAV 수 N_ref (null = 체크포인트 U
 seeds: "0-49"                   # N 마다 같은 seed 목록 — 같은 (seed, N) 에서 두 정책의 초기 상태가 같다 (N 이 다르면 맵도 다름)
 mode: greedy                    # 학습 모델 행동 선택: greedy | sample
 tag: scale                      # 결과 폴더 이름 꼬리 (preset 이름이 뒤에 붙음)
+workers: null                   # 병렬 워커 수 ((N, seed) 단위, CPU, torch 스레드 1). null = CPU 코어 수 - 2 (최소 1). CLI --workers
 
 preset: default                 # 아래 presets 중 하나 (CLI --preset)
 presets:                        # 항목별 지수 e: 값 <- round(값 x r^e), null = 체크포인트 값 고정
@@ -45,10 +46,33 @@ metrics:                        # 에피소드 끝 지표 (eval_common/episode.p
   - same_cell
   - conflict_cross
   - escalations
-  - survivor_truncated
-  - blob_truncated
-lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations, survivor_truncated,
-                  blob_truncated]   # 나머지는 클수록 좋음. 추론 시간 (infer_ms_per_decision) 은 모델만 따로 요약
+  # 슬롯 잘림 (eval_common/episode.py slot_snapshot — S = 역할 결정, K = explore 1 단계 결정 기준)
+  - trunc_decisions_S           # 할당 가능 후보 수 > s_max 인 결정 수
+  - trunc_frac_S                # 그 결정 비율
+  - dropped_S                   # 잘린 할당 가능 후보 수 합 (= dropped_reachable_S: 후보 조건이 골든타임 안 도달)
+  - dropped_S_per_dec           # 결정당 잘린 후보 수
+  - dropped_urgent_S            # 잘린 후보 중 남은 후보의 최소 slack 보다 급한 후보 수 합
+  - best_dropped_S              # EDF 로 고를 생존자가 잘린 쪽에 있던 결정 수
+  - trunc_decisions_K           # 덩어리 수 > k_max 인 1 단계 결정 수
+  - trunc_frac_K
+  - dropped_K                   # 잘린 덩어리 수 합
+  - dropped_K_cells             # 잘린 덩어리 frontier 셀 수 합
+  - s_nodes_overflow            # (예전 survivor_truncated) 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (S 노드 넘침)
+  # 확장성 진단 (eval_common/episode.py run_episode_detailed)
+  - ub_loose                    # 이론적 상한: depot 에서 골든타임 안에 도달 가능한 조난자 비율 (rule_evaluation/upper_bound.py)
+  - ub_greedy                   # 전지적 EDF 스케줄 구조 비율 (참고)
+  - rescue_over_ub              # 구조율 / ub_loose
+  - group_size_mean             # 통신 그룹 평균 크기 (step 평균)
+  - n_groups_mean               # 통신 그룹 수 (step 평균)
+  - isolated_frac               # 혼자인 UAV 비율 (step 평균)
+  - expire_undiscovered_rate    # 만료 원인 (N_T 대비): 미발견 상태로 만료
+  - expire_unassigned_rate      #   발견했지만 아무도 맡지 않은 채 만료
+  - expire_assigned_rate        #   RESCUE UAV 가 맡고 있던 중 만료
+lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations,
+                  trunc_decisions_S, trunc_frac_S, dropped_S, dropped_S_per_dec, dropped_urgent_S, best_dropped_S,
+                  trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells, s_nodes_overflow, isolated_frac,
+                  expire_undiscovered_rate, expire_unassigned_rate, expire_assigned_rate]
+                  # 나머지는 클수록 좋음. 추론 시간 (infer_ms_per_decision) 은 모델만 따로 요약
 
 bootstrap:
   n: 10000                      # 95% CI bootstrap 횟수
