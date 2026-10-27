@@ -38,13 +38,16 @@ def is_role_config(train_cfg):
     return train_cfg.get("env") == "rescue_role"
 
 
-def runtime_env_config(train_env, caller_env=None):
+def runtime_env_config(train_env, caller_env=None, free_keys=()):
     """실행용 env_config = 체크포인트 env_config 를 기본으로 호출자 값으로 덮어쓰되 SHAPE_KEYS 는 체크포인트 값.
-    반환: (env_config, 경고 문자열 목록)."""
+    free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (scale 평가: rows / cols / max_targets / max_episode_len —
+    모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
     cfg = dict(train_env)
     cfg.update(caller_env or {})
     warnings = []
     for k in SHAPE_KEYS:
+        if k in free_keys:
+            continue
         if k in train_env and cfg.get(k) != train_env[k]:
             warnings.append(f"{k}: {cfg.get(k)} -> {train_env[k]} (checkpoint)")
             cfg[k] = train_env[k]
@@ -234,11 +237,12 @@ def load_weights(model, weights, actor_prefixes=ACTOR_PREFIXES):
 class CheckpointPolicy:
     MODES = MODES
 
-    def __init__(self, checkpoint_path, env_config=None, mode="greedy", seed=None, model_config=None, env_priority=False):
+    def __init__(self, checkpoint_path, env_config=None, mode="greedy", seed=None, model_config=None, env_priority=False,
+                 free_keys=()):
         """env_config: 실행 환경 설정 (호출자 sim 의 UAV 구성 / 맵 / 조난자 ...). UAV 수가 학습과 달라도 된다
         (self.trained_n -> self.running_n). env_priority=True 면 env_config 를 그대로 쓰고 구조가 다르면 에러
         (model_config = 호출자 custom_model_config, 주면 네트워크 구조도 비교), False 면 SHAPE_KEYS 를 체크포인트 값으로
-        강제 (내역은 self.warnings)."""
+        강제 (내역은 self.warnings, free_keys 에 있는 키는 강제하지 않음)."""
         import ray
 
         from training.catalog import register_all
@@ -262,7 +266,7 @@ class CheckpointPolicy:
                                    + f"\n체크포인트: {checkpoint_path}")
             run_env, self.warnings = dict(env_config), norm_diff(train_env, env_config)
         else:
-            run_env, self.warnings = runtime_env_config(train_env, env_config)
+            run_env, self.warnings = runtime_env_config(train_env, env_config, free_keys)
         self.env_priority = env_priority
         self.trained_n = len(train_env.get("agents", []))
         self.running_n = len(run_env.get("agents", []))

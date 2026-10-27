@@ -1,0 +1,41 @@
+# main_rule.py 설정 — 규칙 정책 (policies/role_rules.py RuleDecider, 세 head 모두 rule) vs 학습 체크포인트, 같은 seed 몬테카를로 비교
+# 실행: python main_rule.py --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--seeds 0-99] [--mode greedy] [--tag name]
+# 환경 설정 병합 순서: 체크포인트 params.json 의 env_config -> env.files 의 env_config (차례로) -> env.overrides
+#   (관측 shape 를 정하는 키 (eval_common/checkpoint_policy.py SHAPE_KEYS) 는 체크포인트 값으로 고정 — evaluate.py 와 같은 규칙)
+# 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  per_episode.csv, summary.csv, timeseries.csv, summary_table.tex,
+#       figures/*.pdf|png|csv, meta.json (실제 병합 설정 · 체크포인트 · git commit)
+
+checkpoint: null                # 학습 체크포인트 (CLI --checkpoint 가 우선). 레포 기준 상대 경로 또는 절대 경로
+seeds: "0-99"                   # 에피소드 seed 목록 ('0-99' / '0,3,7' / '0-4,10') — 두 정책이 같은 seed 로 같은 초기 상태
+mode: greedy                    # 학습 모델 행동 선택: greedy (세 head argmax) | sample (학습 때와 같은 확률 정책)
+tag: rule_vs_model              # 결과 폴더 이름 꼬리
+
+env:
+  files: []                     # 체크포인트 env_config 위에 차례로 덮을 yaml 파일 (그 파일의 env_config), 예: [training/config/env.yaml]
+  overrides: {}                 # 그 위에 마지막으로 덮을 env_config 값, 예: {num_targets: [30, 50]}
+
+metrics:                        # 에피소드 끝 지표 (eval_common/episode.py run_episode_detailed) — 표 / 요약 순서
+  - rescue_rate
+  - expire_rate
+  - discover_rate
+  - explored
+  - episode_len
+  - rescue_time_mean
+  - golden_slack_mean
+  - same_cell
+  - conflict_cross
+  - escalations
+lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations]   # 나머지는 클수록 좋음
+
+bootstrap:
+  n: 10000                      # 요약 · 짝 차이 95% CI bootstrap 횟수
+  seed: 0                       # bootstrap 난수 seed (재현)
+  alpha: 0.05                   # 1 - 신뢰수준
+  n_timeseries: 1000            # 시계열 step 별 CI bootstrap 횟수 (step 수만큼 반복하므로 작게)
+  n_convergence: 1000           # 몬테카를로 수렴 그림의 에피소드 수별 CI bootstrap 횟수
+
+figures:
+  enabled: true                 # 그림 저장 (--no-figs 로 끔)
+  width: double                 # 여러 패널 그림 폭: single (3.5 in) | double (7.16 in). 한 패널 그림은 항상 single
+  dpi: 300                      # PNG 해상도 (PDF 는 벡터)
+  timeseries_max_step: null     # 시계열 그림 x 축 상한 (null = 가장 긴 에피소드)
