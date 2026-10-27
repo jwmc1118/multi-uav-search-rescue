@@ -16,9 +16,19 @@
 [17] role step 보상 = (|R_t| - w_x |X_t|) / N_T - c_osc 1_osc 정확히 (연결성 · 커버리지 항 없음)
 [18] role SMDP 할인 = config 최상위 gamma (rewards.role.gamma 없음)
 [21] Δcov: 두 UAV 가 같은 새 셀을 동시에 보면 각 1/2, Σ_i Δcov = 처음 관측된 free 셀 수 (실제 센싱으로도)
-[22] explore 스텝 보상 r = (1 - ψ^f) Δcov / |free| (1 + w_mult c) (EXPLORE 인 UAV 만), ψ^f = 1 이면 0
-[23] rescue S - F (N_T = 4): 급한 1 + 다른 1 할당 -> S 2, F 0, 보너스 / 급한 애 빼고 2 -> S 2, F 1, 보너스 없음 /
+[22] explore 스텝 보상 r = Δcov / |free| (1 + w_mult c) (EXPLORE 인 UAV 만, psi_scale false = ψ^f 와 무관) /
+     psi_scale true (예전) = (1 - ψ^f) 배, ψ^f = 1 이면 0
+[23] rescue S - F (f_mode raw = 예전, N_T = 4): 급한 1 + 다른 1 할당 -> S 2, F 0, 보너스 / 급한 애 빼고 2 -> S 2, F 1, 보너스 없음 /
      급한 3 명 · UAV 2 대 · 급한 2 명 할당 -> S 2, F 1 (F_unavoidable 1)
+[25] 예전 보상 보존: discover_mode none + f_mode raw + psi_scale true 면 924ba44 의 env 와 step 별 보상 (role / rescue / explore)
+     이 완전히 같다 (규칙 정책 seed 0-2), 새 기본 설정도 행동 (구조 · 만료 · 길이) 은 같다
+[26] 발견 shaping 할인 합 0: 규칙 (정상 종료) · random (max_episode_len 작게, 시간 제한 종료) seed 0-19 에서 |Σ_t γ^t F_t| < 1e-6,
+     rw_stats 의 합도 같음, 발견 수 = step 중 처음 발견된 생존자 수 (재관측 · 같은 step 여러 UAV 도 한 번), F_excess >= 0
+[27] 결정 구간 telescoping: rollout 의 shaping 부분을 decision_advantages 와 같은 방식으로 누적 = γ^k Φ(s_t1) - Φ(s_t0)
+[28] step 값: 발견 없음 (γ - 1) Φ, 1 명 발견 (γ - 1) Φ + γ w_d / N_T, done -Φ
+[29] feasible 필터: 발견 순간 아무 UAV 도 제때 못 닿는 생존자는 D^feas 제외 (discover_feasible_only false 면 포함), 같은 step 중복 없음
+[30] F_excess: |G| 1 · 급한 2 명 (둘 다 닿음) -> 급한 쪽 F_excess 0 + 보너스 / 급하지 않은 쪽 F_excess 1, 보너스 0;
+     |G| 2 · 급한 2 명을 A 만 제때 -> excess_simple F_min 0, excess_matching F_min 1; random seed 0-19 (matching) F_excess >= 0
 [24] 그룹 기준 EXPLORE 마스크: 그룹 belief 발견 수 < N_T (실제로는 다 찾음) -> EXPLORE 허용, = N_T -> 금지 + 그 그룹
      EXPLORE UAV 에 이벤트 5 (exploration complete), 모든 역할이 막히면 RETURN 허용 (forced 기록)
 """
@@ -338,6 +348,7 @@ def check_coverage_split():
 
 def check_explore_step_reward():
     sim = fresh(2)
+    sim.rewards_cfg["explore"]["psi_scale"] = True                  # 예전 (1 - ψ^f) 배율
     for k in range(4):
         add_victim(sim, (5, 5 + 3 * k))
     sim.targets[0].discovered_at = None                           # 3 / 4 발견 -> ψ^f = 0.75
@@ -350,13 +361,26 @@ def check_explore_step_reward():
     sim.targets[0].discovered_at = 0                              # ψ^f = 1 -> 0
     r1 = sim.role_rewards([], [], explore_active=[True, True])["explore"]
     assert r1 == [0.0, 0.0], r1
-    print(f"[22] explore step reward (1 - psi_f) dcov / |free| (1 + w_mult c): psi_f 0.75, dcov 1.5, mult {mult:.2f} -> {r[0]:.3e}, non-EXPLORE UAV 0; "
-          f"psi_f 1 -> {r1}")
+    # psi_scale false (기본): ψ^f 와 무관 — ψ^f 0.75 / 1 모두 dcov / |free| (1 + w_mult c)
+    out = []
+    for disc_at in (None, 0):
+        sim = fresh(2)
+        assert sim.rewards_cfg["explore"]["psi_scale"] is False
+        for k in range(4):
+            add_victim(sim, (5, 5 + 3 * k))
+        sim.targets[0].discovered_at = disc_at
+        sim.knowledge.new_sets = [{(1, 1), (1, 2)}, {(1, 2)}]
+        out.append((sim.psi_f(), sim.role_rewards([], [], explore_active=[True, False])["explore"]))
+    assert out[0][0] == 0.75 and out[1][0] == 1.0 and out[0][1] == out[1][1], out
+    assert abs(out[0][1][0] - 1.5 / n_free * mult) < 1e-15 and out[0][1][1] == 0.0
+    print(f"[22] explore step reward dcov / |free| (1 + w_mult c) (psi_scale false): psi_f 0.75 and 1 -> both {out[0][1][0]:.3e}; "
+          f"psi_scale true (old): psi_f 0.75 -> {r[0]:.3e}, psi_f 1 -> {r1}; non-EXPLORE UAV 0")
 
 
-def sf_sim(victims):
-    """UAV 0 (15, 10), UAV 1 (15, 20) 한 그룹, victims [(pos, deadline)] (N_T = len)."""
+def sf_sim(victims, f_mode="raw"):
+    """UAV 0 (15, 10), UAV 1 (15, 20) 한 그룹, victims [(pos, deadline)] (N_T = len). f_mode 기본 raw (예전 S - F)."""
     sim = fresh(2)
+    sim.rewards_cfg["rescue"]["f_mode"] = f_mode
     sim.time = 0
     place(sim, [(15, 10), (15, 20)])
     set_front(sim, line(2, 2, 6))
@@ -393,6 +417,237 @@ def check_rescue_sf():
     assert (S, F, unav) == (2, 1, 1) and abs(sf - 1 / 4) < 1e-12 and bonus3 == 0.0, (S, F, unav, sf, bonus3)
     print(f"[23] rescue S - F (N_T 4): urgent + other -> S 2 F 0 r_SF 0.5 + bonus {bonus:.3f}; without urgent -> S 2 F 1 "
           f"r_SF 0.25, no bonus; 3 urgent / 2 UAVs -> S 2 F 1 (F_unavoidable {unav})")
+
+
+# ---------------------------------------------------------------- 발견 shaping / F_excess / 예전 보상 보존
+
+LEGACY_REF = "924ba44"                                        # 보상 수정 전 커밋 (env/role/simulation.py)
+
+
+def legacy_rewards_cfg(cfg):
+    out = dict(cfg)
+    rw = {k: dict(v) for k, v in (cfg.get("rewards") or {}).items()}
+    rw.setdefault("role", {})["discover_mode"] = "none"
+    rw.setdefault("rescue", {})["f_mode"] = "raw"
+    rw.setdefault("explore", {})["psi_scale"] = True
+    out["rewards"] = rw
+    return out
+
+
+def env_cfg(**over):
+    from training.config_loader import load_config
+    cfg = load_config()["env_config"]
+    cfg["events"] = dict(cfg.get("events") or {}, log_dir=None)
+    cfg.update(over)
+    return cfg
+
+
+def load_legacy_sim():
+    """LEGACY_REF 의 env/role/simulation.py 를 별도 모듈로 읽는다 (git 이 없으면 None)."""
+    import importlib.util
+    import os
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        src = subprocess.run(["git", "show", f"{LEGACY_REF}:env/role/simulation.py"], cwd=root, check=True,
+                             capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    spec = importlib.util.spec_from_loader("legacy_role_simulation", loader=None)
+    mod = importlib.util.module_from_spec(spec)
+    mod.__file__ = os.path.join(root, "env", "role", "simulation.py")
+    sys.modules[spec.name] = mod
+    exec(compile(src, f"{LEGACY_REF}:env/role/simulation.py", "exec"), mod.__dict__)
+    return mod
+
+
+def run_ep(sim, seed, decider, on_step=None):
+    sim.random_state = np.random.RandomState(seed)
+    sim.reset()
+    done, rows = False, []
+    while not done:
+        before = (sim._disc_D, sim.time) if hasattr(sim, "_disc_D") else None
+        done, info = sim.step(decider)
+        rows.append({k: list(info[k]) for k in ("reward_role", "reward_rescue", "reward_explore")})
+        if on_step:
+            on_step(sim, info, before, done)
+    return rows, info
+
+
+def check_legacy_equivalence():
+    from env.role.simulation import RoleSimulation
+    from policies.role_rules import RuleDecider
+    legacy = load_legacy_sim()
+    if legacy is None:
+        print(f"[25] skipped (git show {LEGACY_REF} unavailable)")
+        return
+    cfg = env_cfg()
+    old_sim, new_sim, cur_sim = legacy.RoleSimulation(cfg), RoleSimulation(legacy_rewards_cfg(cfg)), RoleSimulation(cfg)
+    steps = 0
+    for seed in (0, 1, 2):
+        a, ia = run_ep(old_sim, seed, RuleDecider())
+        b, ib = run_ep(new_sim, seed, RuleDecider())
+        c, ic = run_ep(cur_sim, seed, RuleDecider())
+        assert a == b, f"seed {seed}: legacy flags reward != {LEGACY_REF}"
+        assert len(a) == len(c) and all(ia[k] == ic[k] for k in ("rescued_total", "expired_total", "time")), seed
+        steps += len(a)
+    print(f"[25] legacy flags (discover none, f_mode raw, psi_scale true) == {LEGACY_REF} rewards step by step "
+          f"({steps} steps, rule seeds 0-2, role / rescue / explore); new defaults: same behaviour (rescued / expired / length)")
+
+
+def shaping_episode(sim, seed, decider):
+    """한 에피소드 -> (Σ_t γ^t F_t (테스트가 따로 누적), rw_stats 합, 끝 시각, 정상 종료?, step 중 발견 수, 최소 F_excess)."""
+    g = sim.shaping_gamma
+    acc = {"s": 0.0, "t": 0}
+
+    def on_step(sim_, info, before, done):
+        acc["s"] += g ** acc["t"] * sim_.last_shaping
+        acc["t"] += 1
+    _, info = run_ep(sim, seed, decider, on_step)
+    found = sum(1 for t in sim.targets if t.discovered and t.discovered_at >= 1)
+    normal = sim.time < int(sim.cfg["max_episode_len"])
+    fx = sim.rw_stats["res_F_excess"]
+    return acc["s"], sim.rw_stats["shaping_disc_sum"], sim.time, normal, found, (min(fx) if fx else 0)
+
+
+def check_shaping_sum_zero():
+    from env.role.simulation import RoleSimulation
+    from policies.role_rules import RandomDecider, RuleDecider
+    worst, kinds, n_found = 0.0, {True: 0, False: 0}, 0
+    for name, cfg, dec in (("rule", env_cfg(), RuleDecider), ("random", env_cfg(max_episode_len=120), RandomDecider)):
+        sim = RoleSimulation(cfg)
+        assert sim.rewards_cfg["role"]["discover_mode"] == "potential" and sim.shaping_gamma == 0.99
+        for seed in range(20):
+            d = dec(seed) if dec is RandomDecider else dec()
+            s, s_env, T, normal, found, fx_min = shaping_episode(sim, seed, d)
+            assert abs(s) < 1e-6 and abs(s - s_env) < 1e-9, (name, seed, s, s_env)
+            assert sim.rw_stats["discovered"] == found, (name, seed, sim.rw_stats["discovered"], found)
+            assert sim.rw_stats["discovered_feasible"] <= found and fx_min >= 0
+            worst = max(worst, abs(s))
+            kinds[normal] += 1
+            n_found += found
+    assert kinds[True] > 0 and kinds[False] > 0, kinds
+    print(f"[26] shaping discounted sum Σ γ^t F_t = 0: 40 episodes (rule seeds 0-19 + random seeds 0-19 with max_episode_len 120), "
+          f"max |sum| {worst:.1e}; {kinds[True]} normal ends, {kinds[False]} time-limit ends; {n_found} step discoveries counted once; "
+          f"F_excess >= 0")
+
+
+def check_shaping_telescoping():
+    from env.role.simulation import RoleSimulation
+    from policies.role_rules import RuleDecider
+    from training.role.ppo import decision_advantages
+    sim = RoleSimulation(env_cfg())
+    g, w_d = sim.shaping_gamma, float(sim.rewards_cfg["role"]["w_d"])
+    F, phi, dec = [], [], []
+
+    def on_step(sim_, info, before, done):
+        F.append(sim_.last_shaping)
+        phi.append(w_d * before[0] / max(1, len(sim_.targets)))          # Φ(s_t) = 이번 step 이전 누적
+        dec.append(info["role_valid"][0] > 0)
+    run_ep(sim, 0, RuleDecider(), on_step)
+    T = len(F)
+    r, dec = np.asarray(F, np.float64), np.asarray(dec, bool)
+    phi_ext = phi + [0.0]                                                # Φ(종료) = 0
+    adv, _, ok = decision_advantages(r, np.zeros(T), dec, dec, True, g, lam=None)
+    steps = np.flatnonzero(dec)
+    checked = 0
+    for k, t0 in enumerate(steps):
+        t1 = int(steps[k + 1]) if k + 1 < len(steps) else T
+        want = g ** (t1 - t0) * phi_ext[t1] - phi_ext[t0]
+        assert ok[t0] == 1 and abs(adv[t0] - want) < 1e-6, (t0, t1, adv[t0], want)      # adv 는 float32
+        checked += 1
+    nz = sum(1 for k, t0 in enumerate(steps) if abs(adv[t0]) > 1e-9)
+    print(f"[27] decision-interval telescoping (UAV 0, rule seed 0): {checked} intervals, Σ γ^(t-t0) F_t = γ^k Φ(s_t1) - Φ(s_t0) "
+          f"(Φ(end) = 0), {nz} non-zero")
+
+
+def shaping_sim(deadlines=(300, 300, 300, 300)):
+    """UAV 0 (15, 10), UAV 1 (15, 20), 미발견 생존자 4 명 (빈 맵)."""
+    sim = fresh(2)
+    sim.time = 0
+    place(sim, [(15, 10), (15, 20)])
+    ids = [add_victim(sim, (15, 12 + 2 * k), deadline=d, discovered=False) for k, d in enumerate(deadlines)]
+    tick(sim)
+    sim._disc_D = 0
+    sim.rw_stats["shaping_disc_sum"] = 0.0
+    return sim, ids
+
+
+def check_shaping_step_values():
+    sim, ids = shaping_sim()
+    g, w_d, n_t = sim.shaping_gamma, float(sim.rewards_cfg["role"]["w_d"]), 4
+    got = []
+    for new, done in (([], False), ([ids[0]], False), ([], False), ([ids[1]], False), ([], True)):
+        sim.time += 1
+        phi = w_d * sim._disc_D / n_t
+        F = sim.discover_shaping(new, done)
+        want = -phi if done else ((g - 1) * phi + (g * w_d / n_t if new else 0.0))
+        assert abs(F - want) < 1e-12, (new, done, F, want)
+        got.append(round(F, 6))
+    assert abs(sim.rw_stats["shaping_disc_sum"]) < 1e-12
+    print(f"[28] shaping step values (γ {g}, w_d {w_d}, N_T 4): none / 1 found / none / 1 found / done -> {got} "
+          f"= (γ-1)Φ [+ γ w_d/N_T], done -Φ; discounted sum 0")
+
+
+def check_shaping_feasible():
+    # 생존자 0: 마감 300 (닿음), 1: 마감 1 (가장 가까운 UAV 까지 BFS 4 > 1 - t) -> D^feas 제외
+    out = {}
+    for only in (True, False):
+        sim, ids = shaping_sim(deadlines=(300, 1, 300, 300))
+        sim.rewards_cfg["role"]["discover_feasible_only"] = only
+        sim.time = 1
+        sim.discover_shaping([ids[0], ids[1]], False)
+        out[only] = (sim._disc_D, sim.rw_stats["discovered"], sim.rw_stats["discovered_feasible"])
+    assert out[True] == (1, 2, 1) and out[False] == (2, 2, 1), out
+    print(f"[29] feasible filter: 2 found, 1 unreachable before its deadline -> D^feas {out[True][0]} (feasible_only), "
+          f"{out[False][0]} (feasible_only false); env newly_found has each survivor once (duplicates / re-sightings: [26])")
+
+
+def check_f_excess():
+    from env.role.simulation import RoleSimulation
+    from policies.role_rules import RandomDecider
+
+    def detail(sim):
+        st = sim.rw_stats
+        return st["res_F"][-1], st["res_F_min"][-1], st["res_F_excess"][-1], sim._sf_pending[0], sim._bonus_pending[0]
+    # (a) |G| = 1: 급한 u1 (σ 3), u2 (σ 4) 둘 다 UAV 0 이 닿음, 급하지 않은 n
+    V = [((15, 13), 6), ((15, 7), 7), ((5, 10), 100)]
+    res = {}
+    for mode in ("excess_simple", "excess_matching"):
+        sim, (u1, u2, n) = sf_sim(V, mode)
+        sf_reward(sim, {0: u1})
+        F, Fm, Fx, sf, bonus = detail(sim)
+        assert (F, Fm, Fx) == (1, 1, 0) and bonus > 0 and abs(sf - 1 / 3) < 1e-12, (mode, F, Fm, Fx, sf, bonus)
+        sim, (u1, u2, n) = sf_sim(V, mode)
+        sf_reward(sim, {0: n})
+        F2, Fm2, Fx2, sf2, bonus2 = detail(sim)
+        assert (F2, Fm2, Fx2) == (2, 1, 1) and bonus2 == 0.0 and abs(sf2 - 0.0) < 1e-12, (mode, F2, Fm2, Fx2, sf2, bonus2)
+        res[mode] = (bonus, sf2)
+    sim, (u1, u2, n) = sf_sim(V, "raw")
+    sf_reward(sim, {0: u1})
+    assert detail(sim)[:3] == (1, 0, 1) and detail(sim)[4] == 0.0                 # 예전: 피할 수 없는 누락도 F, 보너스 없음
+    # (b) |G| = 2, 급한 2 명 (σ 3) 을 UAV 0 만 제때 닿음 (UAV 1 은 7 / 13 > 6)
+    V2 = [((15, 13), 6), ((15, 7), 6), ((5, 20), 100)]
+    fm = {}
+    for mode in ("excess_simple", "excess_matching"):
+        sim, (u1, u2, n) = sf_sim(V2, mode)
+        sf_reward(sim, {0: u1, 1: n})
+        fm[mode] = detail(sim)[:3]
+    assert fm["excess_simple"] == (1, 0, 1) and fm["excess_matching"] == (1, 1, 0), fm
+    # (c) random 정책 seed 0-19 (excess_matching): F_excess >= 0 (env 안 assert), F_min <= F
+    cfg = env_cfg(max_episode_len=150)
+    cfg["rewards"] = dict(cfg["rewards"], rescue=dict(cfg["rewards"]["rescue"], f_mode="excess_matching"))
+    sim = RoleSimulation(cfg)
+    events = 0
+    for seed in range(20):
+        run_ep(sim, seed, RandomDecider(seed))
+        st = sim.rw_stats
+        assert all(x >= 0 for x in st["res_F_excess"]) and all(a <= b for a, b in zip(st["res_F_min"], st["res_F"]))
+        events += len(st["res_F"])
+    print(f"[30] F_excess: |G| 1, 2 urgent both reachable -> pick urgent F 1 F_min 1 F_excess 0 bonus {res['excess_simple'][0]:.3f}; "
+          f"pick non-urgent F_excess 1, bonus 0 (raw: F 1, no bonus); |G| 2, only A reaches both urgent -> simple F_min 0 / "
+          f"matching F_min 1; random seeds 0-19 (matching, {events} rescue events) F_excess >= 0")
 
 
 def check_explore_mask():
@@ -448,4 +703,10 @@ if __name__ == "__main__":
     check_explore_step_reward()
     check_rescue_sf()
     check_explore_mask()
+    check_legacy_equivalence()
+    check_shaping_sum_zero()
+    check_shaping_telescoping()
+    check_shaping_step_values()
+    check_shaping_feasible()
+    check_f_excess()
     print("test_rewards: all ok")

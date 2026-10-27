@@ -123,11 +123,12 @@ def check_rewards():
     n_t = len(sim.targets)
     left = sum(1 for t in sim.targets if t.active)                     # 끝날 때 미구조 = 마지막 step 의 만료
     osc0 = float(sim.rw["role_osc"][0])
-    assert abs(sums[0] - ((n_res - w["role"]["w_x"] * (n_exp + left)) / n_t + osc0)) < 1e-9
+    disc0 = float(sim.rw["role_discover"][0])                          # 발견 shaping (팀 공유, 에피소드 할인 합 0)
+    assert abs(sums[0] - ((n_res - w["role"]["w_x"] * (n_exp + left)) / n_t + disc0 + osc0)) < 1e-9
     ratio = float(sim.rw["explore_cov"].sum())
     assert abs(sums[2] - ratio) < 1e-6 and rescue_outside == 0 and explore_outside == 0 and n_exp_dec > 0
     print(f"[4] role reward: all rescued -> {want:.3f}; episode Σ r_role(R0) {sums[0]:.3f} = ({n_res} - "
-          f"{w['role']['w_x']}·({n_exp} + {left} left at end))/{n_t} + osc {osc0:.2f}")
+          f"{w['role']['w_x']}·({n_exp} + {left} left at end))/{n_t} + discover shaping {disc0:+.3f} + osc {osc0:.2f}")
     print(f"[5] rescue reward only on RESCUE UAVs (Σ {sums[1]:.3f}: S - F + bonus + duplicate); explore reward only on EXPLORE "
           f"UAVs, each in [0, 1] ({n_exp_dec} explore decisions; Σ {sums[2]:.4f} = rw explore_cov {ratio:.4f})")
 

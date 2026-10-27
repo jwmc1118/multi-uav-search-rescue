@@ -50,9 +50,9 @@ from ray.tune.logger import UnifiedLogger
 from training.callbacks import RoleCallbacks
 from training.catalog import register_all
 from eval_common.checkpoint_policy import resolve_checkpoint, restore_or_explain
-from training.config_loader import load_config, reward_settings_line
+from training.config_loader import check_shaping_gamma, load_config, reward_settings_line
 from training.role.ppo import RolePPOTrainer
-from training.reward_plot import PREV_PROGRESS, read_progress, save_reward_plot
+from training.reward_plot import PREV_PROGRESS, read_progress, save_diagnostics, save_reward_plot
 
 # 이어서 학습할 체크포인트. None = 새로 학습 (RolePPO/ 덮어씀, best_model/ 은 유지)
 # 실행 인자 --resume 을 주면 그쪽이 우선. 예)
@@ -94,7 +94,9 @@ def main():
     ap.add_argument("--resume", "--restore", dest="restore", default=RESUME,
                     help="이 체크포인트에서 이어서 학습 (checkpoint_XXXXXX 폴더 또는 checkpoint-XX 파일)")
     ap.add_argument("--local", action="store_true", help="num_workers=0 로컬 디버그")
-    ap.add_argument("--plot-every", type=int, default=10, help="보상 그래프(reward_curve.png) 저장 주기 (iteration)")
+    ap.add_argument("--plot-every", type=int, default=10, help="메인 학습 곡선 (reward_curve.png, 3 x 3) 저장 주기 (iteration)")
+    ap.add_argument("--diag-every", type=int, default=50, help="진단 그림 (diagnostics.png) 저장 주기 (iteration)")
+    ap.add_argument("--plot-smooth", type=float, default=0.1, help="학습 곡선 EMA 평활 계수 α (0 = 평활 없음)")
     args = ap.parse_args()
 
     config = load_config(args.config)                      # 여러 파일이면 앞에서부터 합침
@@ -102,6 +104,7 @@ def main():
 
     if config.get("env") != "rescue_role":
         raise SystemExit(f"[train] config env={config.get('env')!r} — 계층 구조 env 'rescue_role' 만 지원")
+    check_shaping_gamma(config)                          # 발견 shaping γ = 학습 gamma
     print(reward_settings_line(config, "train"))         # 실제 적용 보상 값 (env 기본값 위에 yaml)
     config["callbacks"] = RoleCallbacks          # 에피소드 지표 (custom_metrics). yaml 에는 넣지 않는다
     config.pop("main", None)                     # main_gui.py 전용 섹션 (*_main.yaml 과 key 구조를 맞추려고 env.yaml 에도 있음) — RLlib 이 모르는 키
@@ -165,14 +168,17 @@ def main():
                 saver.eval_best(result, cm)
             done = (args.smoke and it >= args.smoke_iters) or result["timesteps_total"] >= stop_steps
             if it % args.plot_every == 0 or done:
-                save_reward_plot(out_dir, baseline=ev.get("greedy_baseline"))
+                save_reward_plot(out_dir, baseline=ev.get("greedy_baseline"), smooth=args.plot_smooth)
+            if it % args.diag_every == 0 or done:
+                save_diagnostics(out_dir, smooth=args.plot_smooth)
             if it % CHECKPOINT_FREQ == 0 or done:
                 saver.save(result)
             if done:
                 break
     except KeyboardInterrupt:
         print("\n[train] 중단 — 현재 상태를 저장합니다")
-        save_reward_plot(out_dir, baseline=ev.get("greedy_baseline"))
+        save_reward_plot(out_dir, baseline=ev.get("greedy_baseline"), smooth=args.plot_smooth)
+        save_diagnostics(out_dir, smooth=args.plot_smooth)
         if trainer.iteration > saver.last_saved_iter:
             saver.save(_last_result(out_dir))
     finally:

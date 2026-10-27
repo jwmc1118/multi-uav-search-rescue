@@ -42,7 +42,9 @@ env_config:
     log_dir: null               # 에피소드 로그 JSON 폴더 (null = 저장 안 함. run_rules 는 results/rules/event_logs/<tag>)
 
   # ---- 보상 (env/role/simulation.py role_rewards, training/role/ppo.py 결정 단위 SMDP) ----
-  #   r_role(i, t) = (|R_t| - w_x |X_t|) / N_T - c_osc · 1_osc(i)
+  #   r_role(i, t) = (|R_t| - w_x |X_t|) / N_T + F_t - c_osc · 1_osc(i)
+  #   F_t = 발견 shaping (팀 공유): Φ(s_t) = w_d · D^feas_t / N_T, F_t = γ Φ(s_{t+1}) - Φ(s_t), 끝 step F_t = -Φ(s_t)
+  #     D^feas = 처음 발견된 생존자 중 발견 순간 살아 있는 UAV 하나라도 실제 지도 BFS ≤ τ_u - t 인 누적 수
   #   결정 t0 ~ 다음 role 결정 t1 의 할인 누적 + γ^(t1 - t0) V(s_t1) 로 bootstrap (γ = env.yaml 최상위 gamma)
   rewards:
     role:
@@ -51,6 +53,11 @@ env_config:
                                 #   (강제 = 이전 역할이 마스크로 막힘 (용량 0 / 생존자 없음 / 덩어리 없음) 또는 귀환 완료 직후)
       osc_window: 10            # 진동 판정 창 W (step) — 역할 진동 penalty 와 목표 진동 로그 (A -> B -> A) 공통
       terminal_unrescued_as_expired: true   # 에피소드가 끝날 때 아직 구조되지 않은 생존자 = 마지막 step 의 만료 X
+      # potential-based shaping: 에피소드 할인 합 = 0, 최적 정책 불변, 학습 신호만 앞당김 (Ng et al., 1999)
+      #   γ = 최상위 gamma (config_loader 가 rewards.role.shaping_gamma 로 넣음, train.py 가 일치 확인)
+      discover_mode: potential  # none (예전과 완전히 같은 보상) | potential
+      w_d: 0.2                  # Φ = w_d · D^feas / N_T
+      discover_feasible_only: true   # 발견 순간 제때 닿을 수 있던 생존자만 셈 (false = 처음 발견된 생존자 전부)
 
 # ---- 네트워크 (models/role/net.py): 역할 선택 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정)
 #   노드 U (그룹 전체) · S, 관계 S→U, U→S, U→U, S→S, attention 집계

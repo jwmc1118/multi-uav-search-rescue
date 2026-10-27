@@ -42,7 +42,7 @@ training/                       학습
 ├── role/                       ppo (RolePPOTrainer: 헤드별 GAE · 마스크 loss) · action_dist
 ├── callbacks.py                에피소드 지표 (custom_metrics)
 ├── catalog.py                  RLlib 등록 (env / model / action dist)
-└── reward_plot.py              학습 곡선 reward_curve.png
+└── reward_plot.py              학습 곡선 reward_curve.png (메인 3 x 3) · diagnostics.png (진단 패널)
 eval_common/                    평가 공용
 ├── checkpoint_policy.py        체크포인트 로드 + 실행 (GUI / 평가 공용, 다른 N · 맵 크기로 실행)
 ├── episode.py                  에피소드 실행 · 지표 (METRICS, RulePolicy, run_episode, run_episode_detailed, 초기 상태 지문)
@@ -108,12 +108,20 @@ python -m tests.role.test_explore                         # explore 2 단계 (�
 python -m tests.role.test_events                          # 이벤트 체계 (Role 1~6, 쪼개짐 / 합쳐짐, 이벤트 5 간격)
 python -m tests.role.test_return_mask                     # 부분 귀환 역할 마스크
 python -m tests.role.test_gnn                             # 그래프 구성 (ρ / η / ν, ETA σ, 목표 중복) · attention 순열 불변 · 패딩 · 2-hop · 네트워크 독립 / gradient · 연결성 · 보상
-python -m tests.role.test_rewards                         # 보상: rescue S - F / U_ε, explore 커버리지 · 옵션 return, 중복 추적, 역할 진동, EXPLORE 마스크, C_pair
+python -m tests.role.test_rewards                         # 보상: 발견 shaping (할인 합 0 · telescoping), rescue S - F_excess / U_ε, explore 커버리지 · 옵션 return, 중복 추적, 역할 진동, 예전 보상 보존
 python -m tests.role.test_config                          # yaml: 학습용 = *_main key 구조, 깊은 병합, 보상 키
 python -m tests.role.test_gui_style                       # GUI 스타일 표 (하드코딩 색 없음, 범례 = 그린 요소)
 python -m tests.role.print_obs_spec                       # 관측 명세 (그래프 노드 / 간선 특징 표)
 python -m tests.role.smoke_role_policy
 ```
+
+## 보상 (요약, env/role/simulation.py role_rewards — 설정은 각 정책 yaml 의 env_config.rewards)
+
+| head | 보상 | 예전 동작으로 (ablation) |
+|---|---|---|
+| role | (\|R_t\| − w_x\|X_t\|)/N_T + F_t − c_osc·1_osc. F_t = γΦ(s_{t+1}) − Φ(s_t) (끝 step −Φ(s_t)), Φ = w_d·D^feas/N_T, D^feas = step 에서 처음 발견된 생존자 중 그 순간 살아 있는 UAV 하나라도 실제 지도 BFS ≤ τ_u − t 인 수. potential-based shaping 이라 에피소드 할인 합 0 (최적 정책 불변), γ = 최상위 gamma | `discover_mode: none` |
+| rescue | (S − F_excess)/N_T + 1[F_excess = 0]·[(1 − w_c)e^{−d} + w_c c̄_i] − w_dup·1_dup, F_excess = F − F_min (피할 수 없는 급한 생존자 누락 제외: `excess_simple` max(0, \|U_ε\| − \|G_res\|) / `excess_matching` \|U_ε\| − 최대 매칭) | `f_mode: raw` |
+| explore | Δcov^(i)/\|free\|·(1 + w_mult c_{i,t}) (EXPLORE step 만, 옵션 단위 할인 누적) | `psi_scale: true` (× (1 − ψ^f)) |
 
 ## 학습 결과 위치
 
@@ -122,7 +130,9 @@ marl_models/
 ├── RolePPO/                           ← 학습 결과. 새로 학습하면 덮어씀
 │   ├── checkpoints/checkpoint_XXXXXX/ ← 10 iteration 마다 저장, 전부 유지 (train.py CHECKPOINT_FREQ)
 │   ├── checkpoints/best/              ← 고정 seed 평가 (eval.every iteration 마다, 세 head argmax) 기준 best + best_info.json
-│   ├── reward_curve.png               ← 보상·에피소드 길이·loss·entropy 곡선 (--plot-every, 기본 10 iteration)
+│   ├── reward_curve.png               ← 메인 3 x 3: 평가 구조율 (best · 규칙 기준선), 학습 결과, 길이, role / rescue / explore 보상 항목,
+│   │                                    head 별 엔트로피 · KL, critic EV, 역할 비율 (--plot-every 기본 10, EMA --plot-smooth 0.1)
+│   ├── diagnostics.png                ← 진단: 학습 안정성 / 통신 / explore / rescue / 이벤트 패널 (--diag-every, 기본 50 iteration)
 │   ├── progress.csv / result.json / events.out.tfevents.* / params.json
 └── best_model/
     └── <학습 시작 시각>_role/            ← 학습마다 새 폴더 (덮어쓰지 않음). 그 학습에서 지금까지 가장 좋은 모델 (checkpoints/best 복사)

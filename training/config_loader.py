@@ -6,6 +6,7 @@
 
 합치는 규칙: 앞 파일부터 차례로, dict 는 키별로 재귀 병합, 그 외 (list / 숫자 / 문자열) 는 뒤의 값으로 교체.
 합친 뒤 model.custom_model_config.gnn.s_max (그래프 S 노드 수 = rescue 행동 슬롯 수) 를 env_config.s_max 로 넣는다 (한 곳에서만 설정).
+최상위 gamma 는 env_config.rewards.role.shaping_gamma 로 복사한다 (발견 shaping 의 γ = 학습 할인율, train.py 가 일치 확인).
 """
 import copy
 import os
@@ -37,10 +38,12 @@ def reward_settings_line(cfg, tag="train"):
     env = cfg.get("env_config") or {}
     given = env.get("rewards") or {}
     rw = {h: dict(REWARDS_DEFAULTS[h], **(given.get(h) or {})) for h in REWARDS_DEFAULTS}
-    r, s = rw["role"], rw["rescue"]
-    return (f"[{tag}] rewards: role w_x={r['w_x']} c_osc={r['c_osc']}, "
-            f"rescue eps={s['epsilon_urgent']} w_c={s['w_c']} w_dup={s['w_dup']}, "
-            f"explore coverage (1-psi_f) own x (1 + w_mult c) w_mult={rw['explore']['w_mult']}, "
+    r, s, e = rw["role"], rw["rescue"], rw["explore"]
+    shaping = (f"discover {r['discover_mode']} w_d={r['w_d']} feasible_only={r['discover_feasible_only']} "
+               f"gamma_s={r['shaping_gamma']}") if r["discover_mode"] != "none" else "discover none"
+    return (f"[{tag}] rewards: role w_x={r['w_x']} c_osc={r['c_osc']} {shaping}, "
+            f"rescue eps={s['epsilon_urgent']} w_c={s['w_c']} w_dup={s['w_dup']} f_mode={s['f_mode']}, "
+            f"explore coverage {'(1-psi_f) ' if e['psi_scale'] else ''}own x (1 + w_mult c) w_mult={e['w_mult']}, "
             f"gamma={cfg.get('gamma')}, r_c_source={rw['connectivity']['r_c_source']}")
 
 
@@ -55,4 +58,14 @@ def load_config(paths=None):
     s_max = (((cfg.get("model") or {}).get("custom_model_config") or {}).get("gnn") or {}).get("s_max")
     if s_max is not None and isinstance(cfg.get("env_config"), dict):
         cfg["env_config"]["s_max"] = int(s_max)
+    if cfg.get("gamma") is not None and isinstance(cfg.get("env_config"), dict):
+        rw = cfg["env_config"].setdefault("rewards", {})
+        rw["role"] = dict(rw.get("role") or {}, shaping_gamma=float(cfg["gamma"]))
     return cfg
+
+
+def check_shaping_gamma(cfg):
+    """학습 시작 확인: env_config.rewards.role.shaping_gamma == 최상위 gamma (다르면 shaping 이 telescoping 되지 않음)."""
+    g = ((((cfg.get("env_config") or {}).get("rewards") or {}).get("role") or {}).get("shaping_gamma"))
+    if g is None or cfg.get("gamma") is None or abs(float(g) - float(cfg["gamma"])) > 1e-12:
+        raise SystemExit(f"[train] rewards.role.shaping_gamma={g} != gamma={cfg.get('gamma')} — 발견 shaping 의 γ 는 학습 γ 와 같아야 함")

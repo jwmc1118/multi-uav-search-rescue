@@ -78,7 +78,8 @@ class RoleCallbacks(DefaultCallbacks):
     partial_return / partial_deficit / rescued_after_partial : 부분 귀환 횟수 / 그때 부족분 평균 /
                        부분 귀환 충전 뒤 다음 충전까지 구조 수 평균
     role_{zero,partial,full}_{explore,rescue,return} : 용량 상태별 역할 선택 비율
-    rw_role_team / rw_role_osc / rw_rescue_sf / rw_rescue_bonus / rw_rescue_dup / rw_explore_cov : 보상 항목별 에피소드 합 (UAV 평균)
+    rw_role_team / rw_role_discover / rw_role_osc / rw_rescue_sf / rw_rescue_bonus / rw_rescue_dup / rw_explore_cov :
+                       보상 항목별 에피소드 합 (UAV 평균). rw_role_discover = 발견 shaping F_t 합 (할인 없음)
     blob_dist_ratio  : 1 단계 (고른 덩어리 BFS + 1) / (가능한 덩어리 중 가장 가까운 BFS + 1) 평균
     new_cells_per_explore_step : EXPLORE UAV-step 당 새로 관측한 셀 수
     res_redecide_{1..5} : RESCUE 중이던 UAV 를 재결정시킨 이벤트 원인별 횟수 (3 / 5 만 나와야 함)
@@ -96,9 +97,13 @@ class RoleCallbacks(DefaultCallbacks):
     rescue/c_bar     : rescue 결정당 c̄ (옵션 동안 개인 연결도 c_{i,t} 평균)
     explore/conn_mult_mean : 새 셀이 있는 EXPLORE step 의 연결 배율 (1 + w_mult c_{i,t}) 평균
     reward/role_rescue_term : role step 보상 (|R| - w_x |X|) / N_T 의 에피소드 합 (= rw_role_team)
+    reward/role_discover_term : 발견 shaping F_t 의 에피소드 합 (할인 없음, = rw_role_discover)
+    shaping/disc_sum_abs / shaping/discovered / shaping/discovered_feasible : 에피소드 shaping 할인 합 |Σ_t γ^t F_t| (0 이어야 함,
+                       > 1e-6 이면 그래프 경고) / step 중 처음 발견된 생존자 수 / 그중 발견 순간 제때 닿을 수 있던 수
     rescue/S / rescue/F / rescue/U_eps_size / rescue/F_unavoidable / rescue/bonus_rate : rescue 이벤트 평균 S, F, |U_ε|,
-                       max(0, |U_ε| - |G_res|), F = 0 비율
-    reward/rescue_SF_term / reward/rescue_bonus_term : (S - F) / N_T · 보너스의 에피소드 합 (그룹 이벤트마다 1 회)
+                       max(0, |U_ε| - |G_res|), F_excess = 0 비율
+    rescue/F_min / rescue/F_excess : rescue 이벤트 평균 피할 수 없는 누락 F_min (f_mode) / F_excess = F - F_min
+    reward/rescue_SF_term / reward/rescue_bonus_term : (S - F_excess) / N_T · 보너스의 에피소드 합 (그룹 이벤트마다 1 회)
     explore/cov_own_return / explore/option_len / reward/explore_term : explore 옵션 (결정 ~ 다음 explore 결정 / 역할 변경 / 끝)
                        당 커버리지 보상 합 (할인 없음, 학습의 할인 R 평균은 learner value_target_mean_explore) / 옵션 길이 평균 /
                        팀 전체 explore 보상의 에피소드 합
@@ -176,6 +181,10 @@ class RoleCallbacks(DefaultCallbacks):
             rs = es["rewards"]
             m.update({f"rw_{k}": v for k, v in rs["sum"].items()})
             m["reward/role_rescue_term"] = rs["role_rescue_term"]
+            m["reward/role_discover_term"] = rs["role_discover_term"]
+            m["shaping/disc_sum_abs"] = abs(rs["shaping_disc_sum"])
+            m["shaping/discovered"] = rs["discovered"]
+            m["shaping/discovered_feasible"] = rs["discovered_feasible"]
             m["reward/rescue_SF_term"] = rs["rescue_SF_term"]
             m["reward/rescue_bonus_term"] = rs["rescue_bonus_term"]
             m["reward/explore_term"] = rs["explore_term"]
@@ -185,6 +194,7 @@ class RoleCallbacks(DefaultCallbacks):
                             ("explore_conn_mult", "explore/conn_mult_mean"),
                             ("rescue_S", "rescue/S"), ("rescue_F", "rescue/F"), ("rescue_U_eps_size", "rescue/U_eps_size"),
                             ("rescue_F_unavoidable", "rescue/F_unavoidable"), ("rescue_bonus_rate", "rescue/bonus_rate"),
+                            ("rescue_F_min", "rescue/F_min"), ("rescue_F_excess", "rescue/F_excess"),
                             ("explore_return", "explore/cov_own_return"), ("explore_option_len", "explore/option_len")):
                 if rs[k] == rs[k]:
                     m[name] = rs[k]

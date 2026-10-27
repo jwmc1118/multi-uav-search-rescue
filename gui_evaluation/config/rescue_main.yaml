@@ -10,7 +10,8 @@ env_config:
   #   G_res = 이번 이벤트에서 RESCUE 를 고른 같은 그룹 UAV, σ_u = τ_u - t - min_{l ∈ G_res} BFS(l, u) (이벤트 시점 위치)
   #   U_ε = 급한 생존자: 그룹이 아는 생존자 중 G_res 밖의 UAV (다른 그룹 포함) 가 맡지 않았고 0 <= σ_u <= ε
   #   S = G_res 가 할당했고 시간 안에 도착하는 생존자 수 (급함 여부 무관), F = U_ε 중 G_res 가 할당하지 않은 수
-  #   R_i = (S - F) / N_T + 1[F = 0] [(1 - w_c) e^{-d} + w_c c̄_i] - w_dup · 1_dup,  d = Σ_{l ∈ G_res} BFS(l, a_l) / (d_max |G_res|)
+  #   R_i = (S - F_excess) / N_T + 1[F_excess = 0] [(1 - w_c) e^{-d} + w_c c̄_i] - w_dup · 1_dup,  d = Σ_{l ∈ G_res} BFS(l, a_l) / (d_max |G_res|)
+  #   F_excess = F - F_min (F_min = 피할 수 없는 급한 생존자 누락, f_mode)
   #   c̄_i = 결정 t0 ~ t1 (구조 완료 / 목표 무효 이벤트 5 / 에피소드 끝) 동안 개인 연결도 c_{i,t} = (|comp_t(i)| - 1) / (N - 1) 평균
   #   (실제 위치, 간선 = 거리 <= 기본 R_c — env.yaml rewards.connectivity). 보너스는 UAV 별 (옵션이 끝나는 step 에 지급)
   #   1_dup = 같은 생존자를 더 가까운 다른 UAV 가 쫓음. 학습: 옵션 단위 R_i (t1 에 확정, bootstrap 없음), A = R_i - V
@@ -19,6 +20,8 @@ env_config:
       epsilon_urgent: 5   # 급한 생존자: 그룹 slack σ = τ − t − min_{G_res} BFS 가 0 ≤ σ ≤ 이 값
       w_c: 0.5   # 보너스 (F = 0) = (1 − w_c) e^{−d} + w_c · (옵션 동안 개인 연결도 평균)
       w_dup: 0.05
+      f_mode: excess_simple   # raw (F_min = 0, 예전과 같음) | excess_simple (F_min = max(0, |U_ε| − |G_res|)) |
+                              #   excess_matching (F_min = |U_ε| − |M*|, M* = G_res × U_ε 중 d ≤ τ_u − t 인 쌍의 최대 매칭)
 
 # ---- 네트워크 (models/role/net.py): 생존자 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정)
 #   노드 U (그룹의 RESCUE UAV, 이번 이벤트 앞 차례 포함) · S, 관계 S→U, U→S, U→U, S→S, U–S 간선 층마다 갱신

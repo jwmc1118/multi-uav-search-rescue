@@ -28,7 +28,7 @@ env_config:
     goal_mode: nearest          # 이동 목표점: nearest = 내 구간 frontier 중 BFS 가장 가까운 셀 (관측되면 다음 가까운 셀) / medoid = 구간 medoid
 
   # ---- 보상 (env/role/simulation.py role_rewards): 매 step 내 기여 커버리지 x 연결 배율 ----
-  #   r = (1 - ψ^f) Δcov^(i) / |free| · (1 + w_mult c_{i,t})  (EXPLORE 인 step 만), ψ^f = 팀 전체 발견 생존자 수 / N_T,
+  #   r = Δcov^(i) / |free| · (1 + w_mult c_{i,t})  (EXPLORE 인 step 만; psi_scale true 면 x (1 - ψ^f), ψ^f = 팀 전체 발견 / N_T),
   #   c_{i,t} = (|comp_t(i)| - 1) / (N - 1) 개인 연결도 (실제 위치, 간선 = 거리 <= 기본 R_c),
   #   Δcov^(i) = 팀 전역에서 이번 step 처음 관측된 free 셀 중 i 가 본 것 (같은 step 에 k 대가 보면 1/k 씩)
   #   학습: 옵션 단위 할인 누적 R = Σ_{t0 <= t < t1} γ^(t - t0) r (t1 = 다음 explore 결정 / 역할 변경 / 에피소드 끝),
@@ -36,6 +36,7 @@ env_config:
   rewards:
     explore:
       w_mult: 0.75   # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배
+      psi_scale: false   # true = 예전 (1 − ψ^f) 배율 (비교용). ψ^f 는 role 보상에도 안 넣음 (진단 로그만)
 
 # ---- 네트워크 (models/role/net.py): frontier 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정) — 1 단계만
 #   노드 U (그룹의 EXPLORE UAV) · K (덩어리 슬롯), 관계 K→U, U→K, U→U, K→K (kNN), attention 집계

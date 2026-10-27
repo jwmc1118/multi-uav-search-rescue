@@ -5,14 +5,15 @@
 [1] 학습용 yaml (env / role / explore / rescue) 과 *_main.yaml 의 key 집합이 같다. 값이 다른 key 를 출력하고,
     허용 목록 (GUI · 실행 관련: main.*, env_config.gui.*, env_config.depot) 밖의 값 차이가 있으면 실패
 [2] load_config 는 dict 를 key 단위로 깊게 합친다 (env.yaml 과 head yaml 의 env_config.rewards 가 함께 남음), list / 값은 교체
-[3] 보상 설정: 예전 키 (rewards.role.lambda_conn / gamma / w_conn, rewards.explore 전부, rescue delta, events.osc_window)
-    없음, rescue epsilon_urgent / w_c / w_dup · explore w_mult · connectivity r_c_source 가 각 파일에 있음
+[3] 보상 설정: 예전 키 (rewards.role.lambda_conn / gamma / w_conn, rescue delta, events.osc_window) 없음,
+    role discover_mode / w_d / discover_feasible_only, rescue epsilon_urgent / w_c / w_dup / f_mode, explore w_mult / psi_scale,
+    connectivity r_c_source 가 각 파일에 있음. shaping_gamma 는 yaml 이 아니라 load_config 가 최상위 gamma 에서 넣는다
 """
 import os
 
 import yaml
 
-from training.config_loader import CONFIG_DIR, MAIN_CONFIG_DIR, load_config, merge, reward_settings_line
+from training.config_loader import CONFIG_DIR, MAIN_CONFIG_DIR, MAIN_FILES, load_config, merge, reward_settings_line
 
 BASES = ("env", "role", "explore", "rescue")
 ALLOWED = ("main.", "env_config.gui.", "env_config.depot")       # 값 차이 허용 (GUI · 실행 관련)
@@ -52,9 +53,13 @@ def check_deep_merge():
     cfg = load_config()
     rw = cfg["env_config"]["rewards"]
     assert rw["connectivity"]["r_c_source"] == "base"                 # env.yaml
-    assert set(rw["role"]) == {"w_x", "c_osc", "osc_window", "terminal_unrescued_as_expired"}   # role.yaml
-    assert set(rw["explore"]) == {"w_mult"} and set(rw["rescue"]) == {"epsilon_urgent", "w_c", "w_dup"}
+    assert set(rw["role"]) == {"w_x", "c_osc", "osc_window", "terminal_unrescued_as_expired", "discover_mode", "w_d",
+                               "discover_feasible_only", "shaping_gamma"}   # role.yaml + shaping_gamma (config_loader)
+    assert set(rw["explore"]) == {"w_mult", "psi_scale"} and set(rw["rescue"]) == {"epsilon_urgent", "w_c", "w_dup", "f_mode"}
     assert cfg["env_config"]["s_max"] == cfg["model"]["custom_model_config"]["gnn"]["s_max"]
+    assert rw["role"]["shaping_gamma"] == cfg["gamma"]                  # 발견 shaping γ = 학습 gamma
+    main = load_config(MAIN_FILES)
+    assert main["env_config"]["rewards"]["role"]["shaping_gamma"] == main["gamma"]
     print("[2] load_config deep-merges dicts key by key (env_config.rewards: connectivity from env.yaml + role / "
           "rescue from head yamls), lists / scalars replaced")
 
@@ -66,8 +71,9 @@ def check_reward_keys():
         rr = role["rewards"]["role"]
         assert not {"lambda_conn", "gamma", "w_conn"} & set(rr)
         assert "osc_window" not in role["events"] and "osc_window" in rr
-        assert set(exp["rewards"]["explore"]) == {"w_mult"} and "explore_sub_mode" not in exp
-        assert set(res["rewards"]["rescue"]) == {"epsilon_urgent", "w_c", "w_dup"}
+        assert set(exp["rewards"]["explore"]) == {"w_mult", "psi_scale"} and "explore_sub_mode" not in exp
+        assert set(res["rewards"]["rescue"]) == {"epsilon_urgent", "w_c", "w_dup", "f_mode"}
+        assert {"discover_mode", "w_d", "discover_feasible_only"} <= set(rr) and "shaping_gamma" not in rr   # γ 는 yaml 이 아니라 gamma 에서
     cfg = load_config()
     g = cfg["model"]["custom_model_config"]["gnn"]
     assert g["aggr"] in ("attention", "mean_max") and "attn_heads" in g

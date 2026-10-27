@@ -41,16 +41,23 @@ Explore goal latch (events.goal_latch): 목표 셀은 관측되어 frontier 가 
     2) 2 단계 (구간): 이번 step 1 단계를 한 UAV
     3) 이동 (BFS 1 칸) -> 관측 -> 구조 / 만료 -> 덩어리 · 구간 · 이벤트 갱신 -> 보상
 보상    role_rewards() (env_config.rewards):
-          role    r_role(i, t) = (|R_t| - w_x |X_t|) / N_T - c_osc · 1_osc(i)   (끝날 때 미구조 = 마지막 step 의 X)
+          role    r_role(i, t) = (|R_t| - w_x |X_t|) / N_T + F_t - c_osc · 1_osc(i)   (끝날 때 미구조 = 마지막 step 의 X)
                   1_osc: osc_window 안에 역할 A -> B -> A, 두 전환 모두 비강제 (강제 = 이전 역할이 마스크로 막힘 / 귀환 완료 직후)
+                  F_t = 발견 potential-based shaping (rewards.role.discover_mode potential, 팀 공유):
+                        Φ(s_t) = w_d · D^feas_t / N_T, F_t = γ Φ(s_{t+1}) - Φ(s_t), 끝 step F_t = -Φ(s_t) (Φ(종료) = 0)
+                        D^feas = step 에서 처음 발견된 생존자 중 그 순간 살아 있는 UAV 하나라도 실제 지도 BFS ≤ τ_u - t 인 수
+                        (reset 때 이미 보인 생존자는 세지 않음 -> Φ(s_0) = 0). 에피소드 할인 합 Σ γ^t F_t = 0, 최적 정책 불변
           rescue  이벤트 끝 그룹 공동 보상 (G_res = 이번 이벤트에 RESCUE 를 고른 그룹 UAV 전원이 같은 값)
-                  R_i = (S - F) / N_T + 1[F = 0] [(1 - w_c) e^{-d} + w_c c̄_i] - w_dup · 1_dup  (옵션 단위)
+                  R_i = (S - F_excess) / N_T + 1[F_excess = 0] [(1 - w_c) e^{-d} + w_c c̄_i] - w_dup · 1_dup  (옵션 단위)
+                  F_excess = F - F_min (rewards.rescue.f_mode: raw F_min = 0 / excess_simple max(0, |U_ε| - |G_res|) /
+                  excess_matching |U_ε| - |M*|, M* = G_res × U_ε (d ≤ τ_u - t 인 쌍) 최대 매칭) — 피할 수 없는 누락 제외
                   σ_u = τ_u - t - min_{G_res} BFS, U_ε = 그룹이 아는 · G_res 밖 UAV 가 맡지 않은 · 0 <= σ_u <= ε 인 생존자,
                   S = G_res 가 할당했고 시간 안에 닿는 수, F = U_ε 중 G_res 가 할당하지 않은 수,
                   d = Σ BFS(l, a_l) / (d_max |G_res|), c̄_i = 결정 t0 ~ t1 (구조 완료 / 이벤트 5 / 끝) 동안 개인 연결도
                   c_{i,t} = (|comp_t(i)| - 1) / (N - 1) 평균 — (S - F) / N_T · 중복은 결정 step, 보너스는 옵션이 끝나는 step 에,
                   1_dup = 같은 생존자를 더 가까운 다른 UAV (그룹 밖 포함) 가 쫓음 (결정당 최대 1 회)
-          explore 매 step 내 기여 r = (1 - ψ^f) Δcov^(i) / |free| (1 + w_mult c_{i,t}) (EXPLORE 인 step 만). ψ^f = 팀 전체 발견 / N_T,
+          explore 매 step 내 기여 r = Δcov^(i) / |free| (1 + w_mult c_{i,t}) (EXPLORE 인 step 만). rewards.explore.psi_scale true 면
+                  예전 (1 - ψ^f) 배율 (ψ^f = 팀 전체 발견 / N_T, 진단 로그는 항상),
                   Δcov^(i) = 팀 전역에서 처음 관측된 free 셀 중 i 가 본 것 (같은 step 에 k 대가 보면 1/k 씩)
         학습 (training/role/ppo.py) 은 결정 단위: role = SMDP (다음 role 결정까지 할인 누적 + 그 가치로 bootstrap),
         rescue = 옵션 (결정 ~ 다음 role / rescue 결정 / 끝) 보상 합 (할인 없음), explore = 옵션 (결정 ~ 다음 explore 결정 /
@@ -88,7 +95,11 @@ EXPLORE_EVENTS = ("split", "merge")                   # 덩어리 쪼개짐 / �
 INVALIDATING = {"1", "3", "4", "5"}                   # 당사자 목표 무효 (Context goal_valid)
 NEIGHBOR_BINS = (0.25, 0.5, 0.75, 1.0)                # 1-hop 이웃 거리 / R_c 구간 (마지막 = 1 초과, hysteresis)
 CAP_STATES = ("zero", "partial", "full")
-REWARD_ITEMS = ("role_team", "role_osc", "rescue_sf", "rescue_bonus", "rescue_dup", "explore_cov")   # self.rw / 로그 / 그래프 항목
+REWARD_ITEMS = ("role_team", "role_discover", "role_osc", "rescue_sf", "rescue_bonus", "rescue_dup",
+                "explore_cov")                        # self.rw / 로그 / 그래프 항목
+DISCOVER_MODES = ("none", "potential")
+F_MODES = ("raw", "excess_simple", "excess_matching")
+SHAPING_TOL = 1e-6                                    # 에피소드 shaping 할인 합 |Σ γ^t F_t| 경고 기준
 
 ROLE_DEFAULTS = {
     "max_redecide": 1,         # 하위 할당 실패 시 RETURN 으로 대체하는 횟수 상한 (점검용)
@@ -114,13 +125,44 @@ REWARDS_DEFAULTS = {         # env_config.rewards
     "role": {"w_x": 2.0,               # 만료 1 명당 (/ N_T)
              "c_osc": 0.03,            # 역할 진동 (A -> B -> A, 비강제) penalty
              "osc_window": 10,         # 진동 판정 창 W (step) — 역할 진동 penalty 와 목표 진동 로그 공통
-             "terminal_unrescued_as_expired": True},   # 끝날 때 미구조 생존자 = 마지막 step 의 만료
+             "terminal_unrescued_as_expired": True,    # 끝날 때 미구조 생존자 = 마지막 step 의 만료
+             "discover_mode": "potential",     # 발견 shaping: none (예전과 같은 보상) | potential (F_t = γ Φ(s_{t+1}) - Φ(s_t))
+             "w_d": 0.2,                       # Φ = w_d · D^feas / N_T
+             "discover_feasible_only": True,   # 발견 순간 제때 닿을 수 있던 생존자만 (false = 처음 발견된 전부)
+             "shaping_gamma": None},           # shaping 의 γ = 학습 config 최상위 gamma (config_loader 가 넣음, None = env.yaml gamma)
     "rescue": {"epsilon_urgent": 5,    # 급한 생존자: 그룹 slack 0 <= σ <= 이 값
                "w_c": 0.5,             # 보너스 (F = 0) = (1 - w_c) e^{-d} + w_c · c̄ (옵션 동안 개인 연결도 평균)
-               "w_dup": 0.05},         # 더 가까운 다른 UAV 가 같은 생존자를 쫓음 (결정당 1 회)
-    "explore": {"w_mult": 0.2},        # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult · c_{i,t}) 배
+               "w_dup": 0.05,          # 더 가까운 다른 UAV 가 같은 생존자를 쫓음 (결정당 1 회)
+               "f_mode": "excess_simple"},   # F 보정: raw | excess_simple | excess_matching (F_excess = F - F_min)
+    "explore": {"w_mult": 0.2,         # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult · c_{i,t}) 배
+                "psi_scale": False},   # true = 예전 (1 - ψ^f) 배율
     "connectivity": {"r_c_source": "base"},   # 연결성 C 의 R_c: base = 기본 통신 반경 (hysteresis 없음)
 }
+
+
+def _env_yaml_gamma():
+    """학습 config 가 없는 경로 (예전 체크포인트 env_config 등) 의 shaping γ 기본값 = training/config/env.yaml 최상위 gamma."""
+    import yaml
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "training", "config", "env.yaml")
+    with open(path) as f:
+        return float((yaml.safe_load(f) or {})["gamma"])
+
+
+def max_bipartite_matching(adj):
+    """Kuhn 알고리즘. adj = 왼쪽 노드마다 이웃 (오른쪽) 목록 -> 최대 매칭 크기."""
+    match = {}
+
+    def augment(u, seen):
+        for v in adj[u]:
+            if v in seen:
+                continue
+            seen.add(v)
+            if v not in match or augment(match[v], seen):
+                match[v] = u
+                return True
+        return False
+    return sum(1 for u in range(len(adj)) if augment(u, set()))
 
 # 관측 차원
 # critic 입력 (role_self ‖ role_group) — 이름 / 순서 = 관측 인덱스, UAV 의 n-hop 공유 지식 기준
@@ -163,6 +205,12 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         self.rewards_cfg = {h: _merge(REWARDS_DEFAULTS[h], given.get(h)) for h in REWARDS_DEFAULTS}
         if self.rewards_cfg["connectivity"]["r_c_source"] != "base":
             raise ValueError(f"rewards.connectivity.r_c_source={self.rewards_cfg['connectivity']['r_c_source']!r} — base 만 지원")
+        if self.rewards_cfg["role"]["discover_mode"] not in DISCOVER_MODES:
+            raise ValueError(f"rewards.role.discover_mode={self.rewards_cfg['role']['discover_mode']!r} — {DISCOVER_MODES}")
+        if self.rewards_cfg["rescue"]["f_mode"] not in F_MODES:
+            raise ValueError(f"rewards.rescue.f_mode={self.rewards_cfg['rescue']['f_mode']!r} — {F_MODES}")
+        g = self.rewards_cfg["role"]["shaping_gamma"]
+        self.shaping_gamma = float(g) if g is not None else _env_yaml_gamma()
         self.k_max = int(self.cluster_cfg["k_max"])
         self.n_sub_max = int(self.explore_cfg["n_sub_max"])
         self.n_seg_slots = n_seg_slots(self.n_sub_max)
@@ -1052,7 +1100,7 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         done = self._is_done()
         rew = self.role_rewards(rescued, expired, done,
                                 explore_active=[self.agents[i].alive and chosen_mode[i] is Mode.EXPLORE for i in range(n)],
-                                explore_new=[bool(sub_valid["explore_s1"][i]) for i in range(n)])
+                                explore_new=[bool(sub_valid["explore_s1"][i]) for i in range(n)], newly_found=newly_found)
 
         # ---- info ----
         exp_valid = [bool(sub_valid["explore_s1"][i]) for i in range(n)]       # explore 결정 = 1 단계 (2 단계는 Hungarian)
@@ -1132,9 +1180,13 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         self._dup_done = [True] * n                   # 지금 rescue 결정에서 중복 penalty 를 이미 받았나 (결정당 1 회)
         self._opt = [None] * n                        # explore 옵션 (로그용): [t0, 누적 보상 (할인 없음)]
         self._explore_seen_all = [False] * n          # 그룹 belief 발견 수가 N_T 에 도달한 것을 이미 겪었나 (이벤트 5)
+        self._disc_D = 0                              # 발견 shaping 누적 D^feas (reset 때 이미 보인 생존자는 제외 -> Φ(s_0) = 0)
+        self.last_shaping = 0.0                       # 이번 step F_t (점검용)
         self.rw = {k: np.zeros(n) for k in REWARD_ITEMS}
         self.rw_stats = {"osc": 0, "forced": 0, "voluntary": 0, "dup_in": 0, "dup_out": 0,
+                         "discovered": 0, "discovered_feasible": 0, "shaping_disc_sum": 0.0,
                          "rescue_events": 0, "res_S": [], "res_F": [], "res_U": [], "res_F_unavoidable": [],
+                         "res_F_min": [], "res_F_excess": [],
                          "res_bonus": [], "res_sf_term": 0.0, "res_bonus_term": 0.0, "c_bar": [], "conn_mult": [],
                          "c_real": [], "psi_f": [], "explore_term": 0.0, "opt_return": [], "opt_len": [], "res_opt_unclosed": 0}
 
@@ -1188,9 +1240,11 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         return urgent, sig, d
 
     def _rescue_event_reward(self, g, G):
-        """이벤트 끝 rescue 보상 (G = G_res): 결정 step 에 (S - F) / N_T (G 전원 같은 값) 와 중복 -w_dup (_check_dup),
-        옵션 (결정 ~ 구조 완료 / 이벤트 5 / 끝) 이 끝나는 step 에 개인 보너스 1[F = 0] [(1 - w_c) e^{-d} + w_c c̄_i] (role_rewards).
+        """이벤트 끝 rescue 보상 (G = G_res): 결정 step 에 (S - F_excess) / N_T (G 전원 같은 값) 와 중복 -w_dup (_check_dup),
+        옵션 (결정 ~ 구조 완료 / 이벤트 5 / 끝) 이 끝나는 step 에 개인 보너스 1[F_excess = 0] [(1 - w_c) e^{-d} + w_c c̄_i] (role_rewards).
         S = G 가 할당했고 시간 안에 도착하는 생존자 수, F = U_ε 중 G 누구에게도 할당되지 않은 수,
+        F_excess = F - F_min, F_min = 피할 수 없는 누락 (f_mode: raw 0 / excess_simple max(0, |U_ε| - |G|) /
+        excess_matching |U_ε| - |M*|, M* = l ∈ G, u ∈ U_ε, d[l][u] <= τ_u - t 인 쌍을 간선으로 한 최대 매칭),
         d = Σ_{l ∈ G} BFS(l, a_l) / (d_max |G|)."""
         G = [i for i in G if self.agents[i].assigned_target is not None]
         if not G:
@@ -1198,27 +1252,42 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         for i in G:
             self._dup_done[i] = False
         n_t = max(1, len(self.targets))
-        urgent, sig, _ = self.rescue_urgent(g, G)
+        urgent, sig, du = self.rescue_urgent(g, G)
         a = {l: self.agents[l].assigned_target for l in G}
         dist = {l: self._dist(l, self.targets[a[l]].pos) for l in G}
         S = sum(1 for l in G if self.time + dist[l] <= _deadline(self.targets[a[l]]))
         F = sum(1 for k in urgent if k not in a.values())
+        F_min = self.unavoidable_misses(G, urgent, du)
+        F_ex = F - F_min
+        assert F_ex >= 0, (F, F_min, urgent, G)
         d = sum(dist[l] for l in G) / (self.d_max * len(G))
-        sf = (S - F) / n_t
+        sf = (S - F_ex) / n_t
         for l in G:
             self._sf_pending[l] += sf
             if self._res_opt[l] is not None:                      # 닫히지 않은 옵션 (정상이면 없음) — 보상 없이 버림
                 self.rw_stats["res_opt_unclosed"] += 1
-            self._res_opt[l] = {"F": F, "d": d, "csum": 0.0, "n": 0}
+            self._res_opt[l] = {"F": F_ex, "d": d, "csum": 0.0, "n": 0}
         st = self.rw_stats
         st["rescue_events"] += 1
         st["res_S"].append(S)
         st["res_F"].append(F)
         st["res_U"].append(len(urgent))
         st["res_F_unavoidable"].append(max(0, len(urgent) - len(G)))
-        st["res_bonus"].append(float(F == 0))
+        st["res_F_min"].append(F_min)
+        st["res_F_excess"].append(F_ex)
+        st["res_bonus"].append(float(F_ex == 0))
         st["res_sf_term"] += sf
         self._check_dup(G)
+
+    def unavoidable_misses(self, G, urgent, d):
+        """F_min (rewards.rescue.f_mode). d[l][u] = rescue_urgent 의 BFS 거리."""
+        mode = self.rewards_cfg["rescue"]["f_mode"]
+        if mode == "raw" or not urgent:
+            return 0
+        if mode == "excess_simple":
+            return max(0, len(urgent) - len(G))
+        adj = [[k for k in urgent if d[l][k] <= _deadline(self.targets[k]) - self.time] for l in G]
+        return len(urgent) - max_bipartite_matching(adj)
 
     def _check_dup(self, uavs=None):
         """중복 추적: 같은 생존자를 목표로 하는 다른 UAV (그룹 밖 포함, 전체 정보) 가 더 가까우면 -w_dup (결정당 1 회)."""
@@ -1267,19 +1336,21 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         """ψ^f = 팀 전체에서 지금까지 발견된 생존자 수 / N_T (전역, 학습용 privileged)."""
         return sum(1 for t in self.targets if t.discovered) / max(1, len(self.targets))
 
-    def role_rewards(self, rescued, expired, done=False, explore_active=None, explore_new=None):
+    def role_rewards(self, rescued, expired, done=False, explore_active=None, explore_new=None, newly_found=None):
         """head 별 보상 (N,) + 항목별 기록 (self.rw).
-        role    (|R_t| - w_x |X_t|) / N_T - c_osc 1_osc (매 step, SMDP)
-        rescue  결정 step 에 (S - F) / N_T - w_dup, 옵션이 끝나는 step 에 개인 보너스 (학습은 옵션 합, A = R - V)
-        explore 매 step 내 기여 r = (1 - ψ^f) Δcov^(i) / |free| (1 + w_mult c_{i,t}) — 이번 step EXPLORE 인 UAV 만 (explore_active),
-                학습은 옵션 단위 할인 누적 (training/role/ppo.py). explore_new = 이번 step explore 결정 (옵션 시작, 로그용)."""
+        role    (|R_t| - w_x |X_t|) / N_T + F_t - c_osc 1_osc (매 step, SMDP). F_t = 발견 potential-based shaping
+                (discover_shaping, newly_found = 이번 step 처음 발견된 생존자) — 에피소드 할인 합 0, 최적 정책 불변
+        rescue  결정 step 에 (S - F_excess) / N_T - w_dup, 옵션이 끝나는 step 에 개인 보너스 1[F_excess = 0] (...) (옵션 합, A = R - V)
+        explore 매 step 내 기여 r = Δcov^(i) / |free| (1 + w_mult c_{i,t}) (psi_scale true 면 x (1 - ψ^f)) — 이번 step EXPLORE 인
+                UAV 만 (explore_active), 학습은 옵션 단위 할인 누적 (training/role/ppo.py). explore_new = 이번 step explore 결정 (로그용)."""
         rc, n, n_t = self.rewards_cfg, self.n_agents, max(1, len(self.targets))
         n_x = len(expired)
         if done and rc["role"]["terminal_unrescued_as_expired"]:
             n_x += sum(1 for t in self.targets if t.active)
         team = (len(rescued) - float(rc["role"]["w_x"]) * n_x) / n_t
         self.rw_stats["c_real"].append(self.real_connectivity())          # 진단 로그 (보상 아님)
-        role = [team - self._osc_pen[i] for i in range(n)]
+        shaping = self.discover_shaping(newly_found or [], done)
+        role = [team + shaping - self._osc_pen[i] for i in range(n)]
         c = self.personal_connectivity()
         self._rescue_options(c, rescued, done)
         rescue = [self._sf_pending[i] + self._bonus_pending[i] + self._res_pending[i] for i in range(n)]
@@ -1290,7 +1361,8 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         cov = self.explore_coverage()
         n_free = float(self.n_free_cells())
         w_mult = float(rc["explore"]["w_mult"])
-        explore = [(1.0 - psi) * cov[i] / n_free * (1.0 + w_mult * c[i]) if explore_active[i] else 0.0 for i in range(n)]
+        scale = (1.0 - psi) if rc["explore"]["psi_scale"] else 1.0
+        explore = [scale * cov[i] / n_free * (1.0 + w_mult * c[i]) if explore_active[i] else 0.0 for i in range(n)]
         self.rw_stats["conn_mult"] += [1.0 + w_mult * c[i] for i in range(n) if explore_active[i] and cov[i] > 0]
         self.rw_stats["explore_term"] += float(sum(explore))
         self._track_options(explore, explore_active, explore_new or [False] * n, done)
@@ -1298,6 +1370,7 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
             if a.alive and a.mode is Mode.EXPLORE:
                 self.ev_stats["new_cells"].append(float(self.knowledge.newly_sensed[i]))
         self.rw["role_team"] += team
+        self.rw["role_discover"] += shaping
         self.rw["role_osc"] -= np.asarray(self._osc_pen)
         self.rw["rescue_sf"] += np.asarray(self._sf_pending)
         self.rw["rescue_bonus"] += np.asarray(self._bonus_pending)
@@ -1306,6 +1379,46 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
         self._osc_pen, self._res_pending = [0.0] * n, [0.0] * n
         self._sf_pending, self._bonus_pending = [0.0] * n, [0.0] * n
         return {"role": role, "rescue": rescue, "explore": explore}
+
+    def discover_shaping(self, newly_found, done):
+        """발견 potential-based shaping F_t (Ng et al., 1999). Φ(s_t) = w_d · D^feas_t / N_T (이번 step 이전 누적),
+        Φ(s_{t+1}) = newly_found 반영 후. F_t = γ Φ(s_{t+1}) - Φ(s_t), done step 은 -Φ(s_t) (Φ(종료) = 0).
+        γ = self.shaping_gamma (학습 config gamma). 할인 합 Σ_t γ^t F_t (t = 0 부터) 를 rw_stats 에 누적하고 끝에 0 인지 확인.
+        discover_mode none 이면 0 (통계도 안 셈)."""
+        rc = self.rewards_cfg["role"]
+        self.last_shaping = 0.0
+        if rc["discover_mode"] == "none":
+            return 0.0
+        st = self.rw_stats
+        n_t = max(1, len(self.targets))
+        w_d, gam = float(rc["w_d"]), self.shaping_gamma
+        phi0 = w_d * self._disc_D / n_t
+        new = list(newly_found)
+        feas = self.feasible_at_discovery(new) if new else []
+        st["discovered"] += len(new)
+        st["discovered_feasible"] += len(feas)
+        self._disc_D += len(feas) if rc["discover_feasible_only"] else len(new)
+        F = -phi0 if done else gam * (w_d * self._disc_D / n_t) - phi0
+        st["shaping_disc_sum"] += gam ** (self.time - 1) * F
+        if done and abs(st["shaping_disc_sum"]) > SHAPING_TOL:
+            import warnings
+            warnings.warn(f"discover shaping 할인 합 {st['shaping_disc_sum']:.3e} != 0 (t={self.time})")
+        self.last_shaping = float(F)
+        return float(F)
+
+    def feasible_at_discovery(self, tis):
+        """tis 중 지금 (self.time) 살아 있는 UAV 하나라도 실제 장애물 지도 BFS 거리 <= τ_u - t 로 닿는 생존자 (발견 step 에만 호출)."""
+        fields = {}
+        for a in self.agents:
+            if a.alive and a.pos not in fields:
+                fields[a.pos] = bfs_field(a.pos, self.obstacles, self.rows, self.cols)[0]
+        out = []
+        for ti in tis:
+            t = self.targets[ti]
+            slack = _deadline(t) - self.time
+            if any(0 <= int(f[t.pos]) <= slack for f in fields.values()):
+                out.append(ti)
+        return out
 
     def personal_connectivity(self):
         """c_{i,t} (N,): 팀 전체 활동 UAV 의 현재 위치로 개인 연결도 (비활동 UAV = 0)."""
@@ -1383,9 +1496,13 @@ class RoleSimulation(ExploreMixin, BaseSimulation):
                 "rescue_events": st["rescue_events"],
                 "rescue_S": mean(st["res_S"]), "rescue_F": mean(st["res_F"]), "rescue_U_eps_size": mean(st["res_U"]),
                 "rescue_F_unavoidable": mean(st["res_F_unavoidable"]), "rescue_bonus_rate": mean(st["res_bonus"]),
+                "rescue_F_min": mean(st["res_F_min"]), "rescue_F_excess": mean(st["res_F_excess"]),
                 "rescue_SF_term": st["res_sf_term"], "rescue_bonus_term": st["res_bonus_term"],
                 "rescue_c_bar": mean(st["c_bar"]), "explore_conn_mult": mean(st["conn_mult"]),
                 "role_rescue_term": float(self.rw["role_team"].mean()),
+                "role_discover_term": float(self.rw["role_discover"].mean()),
+                "discovered": st["discovered"], "discovered_feasible": st["discovered_feasible"],
+                "shaping_disc_sum": st["shaping_disc_sum"],
                 "conn_real_mean": mean(st["c_real"]),
                 "explore_term": st["explore_term"], "explore_return": mean(st["opt_return"]),
                 "explore_option_len": mean(st["opt_len"]), "explore_options": len(st["opt_len"]),
