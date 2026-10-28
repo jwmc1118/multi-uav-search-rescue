@@ -35,7 +35,7 @@ env_config:
   #   bootstrap 없음, A = R - V (γ = env.yaml 최상위 gamma)
   rewards:
     explore:
-      w_mult: 0.75   # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배
+      w_mult: 0.0   # 연결 배율: 새 셀을 밝힐 때만 (1 + w_mult·c) 배
       psi_scale: false   # true = 예전 (1 − ψ^f) 배율 (비교용). ψ^f 는 role 보상에도 안 넣음 (진단 로그만)
 
 # ---- 네트워크 (models/role/net.py): frontier 할당 네트워크 (독립 encoder · GNN, env.yaml model.gnn 설정) — 1 단계만

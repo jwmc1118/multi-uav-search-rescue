@@ -19,7 +19,7 @@ env_config:
     rescue:
       epsilon_urgent: 5   # 급한 생존자: 그룹 slack σ = τ − t − min_{G_res} BFS 가 0 ≤ σ ≤ 이 값
       w_c: 0.5   # 보너스 (F = 0) = (1 − w_c) e^{−d} + w_c · (옵션 동안 개인 연결도 평균)
-      w_dup: 0.05
+      w_dup: 0.5
       f_mode: excess_simple   # raw (F_min = 0, 예전과 같음) | excess_simple (F_min = max(0, |U_ε| − |G_res|)) |
                               #   excess_matching (F_min = |U_ε| − |M*|, M* = G_res × U_ε 중 d ≤ τ_u − t 인 쌍의 최대 매칭)
 

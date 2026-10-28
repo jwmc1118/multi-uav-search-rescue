@@ -6,7 +6,7 @@ env_config:
   # ---- 헤드별 정책: learned = 학습 / rule = 규칙 정책 (policies/role_rules.py, 그 헤드는 loss · critic 에서 제외) ----
   # ablation: (rule, rule, rule) / (learned, rule, rule) / (learned, learned, rule) / (learned, learned, learned)
   #           = 전부 규칙 (기준선) / Role 만 학습 / Role + Rescue 학습 / 전부 학습
-  policy_mode: {role: learned}    # Role 헤드: learned = 학습 / rule = 규칙 (policies/role_rules.py rule_role)
+  policy_mode: {role: rule}    # Role 헤드: learned = 학습 / rule = 규칙 (policies/role_rules.py rule_role)
 
   # ---- 역할 결정 ----
   role:

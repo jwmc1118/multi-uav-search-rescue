@@ -4,7 +4,7 @@
 # (env/role/explore.py, env/role/clusters.py, policies/role_rules.py rule_explore / rule_explore_sub, models/role/net.py)
 # 학습: python -m training.train   (env.yaml + role.yaml + explore.yaml + rescue.yaml)
 env_config:
-  policy_mode: {explore: learned}   # Explore 헤드: learned = 학습 / rule = 그리디 (1 단계 share_rr, 2 단계 κ Hungarian)
+  policy_mode: {explore: rule}   # Explore 헤드: learned = 학습 / rule = 그리디 (1 단계 share_rr, 2 단계 κ Hungarian)
   # explore 2 단계 (같은 덩어리 안 구간 배정) 는 항상 κ 합 최소 1:1 Hungarian (학습 없음, explore_sub_mode 옵션 제거)
   # 덩어리 쪼개짐 / 합쳐짐: 재결정 없이 소속만 이어 붙임 (쪼개짐 = 내 구간이 가장 많이 남은 조각, 합쳐짐 = 새 덩어리)
   # 이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정 (기존 배정자의 explore
