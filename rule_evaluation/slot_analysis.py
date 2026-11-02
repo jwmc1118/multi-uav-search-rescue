@@ -51,7 +51,7 @@ def _dec_stats(dec):
             "dropped_S_per_dec": sum(d["dropped"] for d in r) / nr,
             "dropped_S_per_trunc": sum(d["dropped"] for d in r) / max(1, sum(d["dropped"] > 0 for d in r)),
             "urgent_per_dec": sum(d["urgent"] for d in r) / nr, "best_dropped_frac": sum(d["best_dropped"] for d in r) / nr,
-            "n_alloc_mean": sum(d["n_alloc"] for d in r) / nr, "n_alloc_max": max((d["n_alloc"] for d in r), default=0),
+            "n_assignable_mean": sum(d["n_assignable"] for d in r) / nr, "n_assignable_max": max((d["n_assignable"] for d in r), default=0),
             "s1_dec": len(k), "trunc_frac_K": sum(d["k_dropped"] > 0 for d in k) / nk,
             "dropped_K_per_dec": sum(d["k_dropped"] for d in k) / nk, "dropped_K_cells_per_dec": sum(d["k_dropped_cells"] for d in k) / nk}
 
@@ -97,7 +97,7 @@ def main():
     md = [f"N = {len(base['agents'])}, num_targets {base['num_targets']}, max_episode_len {base['max_episode_len']}, "
           f"k_max {base.get('cluster', {}).get('k_max')}, seeds {args.seeds} ({len(seeds)}), rule policy\n"]
     hdr = ["s_max", "rescue", "expire", "role dec/ep", "trunc S frac", "dropped S/dec", "dropped S/trunc dec",
-           "urgent/dec", "EDF dropped frac", "n_alloc mean", "n_alloc max", "S-node overflow/ep",
+           "urgent/dec", "EDF dropped frac", "n_assignable mean", "n_assignable max", "S-node overflow/ep",
            "trunc K frac", "dropped K/dec", "dropped K cells/dec", "reachable==dropped"]
     rows = []
     for S in s_list:
@@ -106,29 +106,29 @@ def main():
         same = all(r["dropped_reachable_S"] == r["dropped_S"] for r in p)
         rows.append([str(S), _mean(p, "rescue_rate"), _mean(p, "expire_rate"), _mean(p, "role_decisions"),
                      d["trunc_frac_S"], d["dropped_S_per_dec"], d["dropped_S_per_trunc"], d["urgent_per_dec"],
-                     d["best_dropped_frac"], d["n_alloc_mean"], str(d["n_alloc_max"]), _mean(p, "s_nodes_overflow"),
+                     d["best_dropped_frac"], d["n_assignable_mean"], str(d["n_assignable_max"]), _mean(p, "s_nodes_overflow"),
                      d["trunc_frac_K"], d["dropped_K_per_dec"], d["dropped_K_cells_per_dec"], str(same)])
     md.append(_table("s_max 별 (에피소드 평균 / 결정 단위 비율)", hdr, rows))
     S0 = s_list[0]
     d0 = [x for x in dec if x["s_max"] == S0]
     p0 = [r for r in per if r["s_max"] == S0]
-    hdr2 = ["bin", "episodes", "rescue", "trunc S frac", "dropped S/dec", "urgent/dec", "EDF dropped frac", "n_alloc mean",
+    hdr2 = ["bin", "episodes", "rescue", "trunc S frac", "dropped S/dec", "urgent/dec", "EDF dropped frac", "n_assignable mean",
             "trunc K frac", "dropped K/dec"]
     rows = []
     for lo, hi in T_BINS:
         ss = {r["seed"] for r in p0 if lo <= r["n_targets"] <= hi}
         d = _dec_stats([x for x in d0 if x["seed"] in ss])
         rows.append([f"{lo}-{hi}", str(len(ss)), _mean([r for r in p0 if r["seed"] in ss], "rescue_rate"), d["trunc_frac_S"],
-                     d["dropped_S_per_dec"], d["urgent_per_dec"], d["best_dropped_frac"], d["n_alloc_mean"],
+                     d["dropped_S_per_dec"], d["urgent_per_dec"], d["best_dropped_frac"], d["n_assignable_mean"],
                      d["trunc_frac_K"], d["dropped_K_per_dec"]])
     md.append(_table(f"조난자 수 구간별 (s_max {S0})", hdr2, rows))
     hdr3 = ["phase (t / max_len)", "role dec", "trunc S frac", "dropped S/dec", "urgent/dec", "EDF dropped frac",
-            "n_alloc mean", "s1 dec", "trunc K frac", "dropped K/dec"]
+            "n_assignable mean", "s1 dec", "trunc K frac", "dropped K/dec"]
     rows = []
     for name, a, b in PHASES:
         d = _dec_stats([x for x in d0 if a <= x["time"] / x["max_episode_len"] < b])
         rows.append([name, str(d["role_dec"]), d["trunc_frac_S"], d["dropped_S_per_dec"], d["urgent_per_dec"],
-                     d["best_dropped_frac"], d["n_alloc_mean"], str(d["s1_dec"]), d["trunc_frac_K"], d["dropped_K_per_dec"]])
+                     d["best_dropped_frac"], d["n_assignable_mean"], str(d["s1_dec"]), d["trunc_frac_K"], d["dropped_K_per_dec"]])
     md.append(_table(f"에피소드 시간대별 (s_max {S0})", hdr3, rows))
     text = "\n".join(md)
     with open(os.path.join(out, "tables.md"), "w") as f:

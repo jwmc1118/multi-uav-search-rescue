@@ -1,12 +1,16 @@
-"""config yaml 로더 — training/config/ 의 env.yaml (환경 + 학습 공통) + role.yaml + explore.yaml + rescue.yaml (정책별:
-학습 / 규칙, 이벤트 · 결정 규칙, 보상 weight, 네트워크) 를 합친다.
+"""config yaml 로더 — training/config/ 의 env.yaml (환경 + 학습 공통) + role.yaml (역할: 학습 / 규칙, 이벤트, role 보상,
+역할 선택 네트워크) + task.yaml (하위 할당: 학습 / 규칙, task 네트워크 · critic · loss, rescue 보상, 덩어리 · 1 단계 · 2 단계 ·
+explore 보상) 를 차례로 합친다.
 
-    load_config()                              # 기본 네 파일
+    load_config()                              # 기본 세 파일
     load_config([..., "my.yaml"])              # 파일 목록 (뒤 파일이 앞 파일 값을 덮어씀)
 
 합치는 규칙: 앞 파일부터 차례로, dict 는 키별로 재귀 병합, 그 외 (list / 숫자 / 문자열) 는 뒤의 값으로 교체.
-합친 뒤 model.custom_model_config.gnn.s_max (그래프 S 노드 수 = rescue 행동 슬롯 수) 를 env_config.s_max 로 넣는다 (한 곳에서만 설정).
-최상위 gamma 는 env_config.rewards.role.shaping_gamma 로 복사한다 (발견 shaping 의 γ = 학습 할인율, train.py 가 일치 확인).
+합친 뒤 model.custom_model_config.gnn.s_max (그래프 S 노드 수 = 할당 행동의 생존자 슬롯 수) 를 env_config.s_max 로 넣는다 (한 곳에서만 설정).
+최상위 role_gamma (role SMDP 할인 γ_r) 는 model.custom_model_config.role_gamma 로 복사한다 (RLlib 이 모르는 최상위 키라
+train.py 가 빼므로, training/role/ppo.py 가 policy config 의 이 값으로 role advantage 를 계산). 최상위 gamma 는 explore 옵션 할인 · RLlib 설정.
+env_config.explore.order_dist_alpha (explore 1 단계 차례의 α) 는 model.custom_model_config.order_dist_alpha 로 복사한다
+(env · 그리디 · 모델 순차 디코딩이 같은 α 를 쓰게).
 """
 import copy
 import os
@@ -14,10 +18,16 @@ import os
 import yaml
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
-DEFAULT_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env.yaml", "role.yaml", "explore.yaml", "rescue.yaml")]
+DEFAULT_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env.yaml", "role.yaml", "task.yaml")]
 # main_gui.py 전용 yaml (학습용과 key 구조가 같음, 병합 순서도 같음) — gui_evaluation/config/
 MAIN_CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui_evaluation", "config")
-MAIN_FILES = [os.path.join(MAIN_CONFIG_DIR, f) for f in ("env_main.yaml", "role_main.yaml", "explore_main.yaml", "rescue_main.yaml")]
+MAIN_FILES = [os.path.join(MAIN_CONFIG_DIR, f) for f in ("env_main.yaml", "role_main.yaml", "task_main.yaml")]
+# main_rule.py / main_scale.py 평가 환경 yaml (학습용과 key 구조 · 병합 순서 같음) — rule_evaluation/config/, scale_evaluation/config/
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RULE_CONFIG_DIR = os.path.join(_REPO, "rule_evaluation", "config")
+RULE_FILES = [os.path.join(RULE_CONFIG_DIR, f) for f in ("env_rule.yaml", "role_rule.yaml", "task_rule.yaml")]
+SCALE_CONFIG_DIR = os.path.join(_REPO, "scale_evaluation", "config")
+SCALE_FILES = [os.path.join(SCALE_CONFIG_DIR, f) for f in ("env_scale.yaml", "role_scale.yaml", "task_scale.yaml")]
 
 
 def merge(base, over):
@@ -32,19 +42,19 @@ def merge(base, over):
 
 
 def reward_settings_line(cfg, tag="train"):
-    """실제 적용되는 보상 설정 한 줄 (env 기본값 REWARDS_DEFAULTS 위에 yaml env_config.rewards, gamma = 최상위 config) —
-    train.py / main_gui.py 시작 출력 (설정 반영 확인용)."""
-    from env.role.simulation import REWARDS_DEFAULTS
+    """실제 적용되는 보상 설정 한 줄 (env 기본값 REWARDS_DEFAULTS 위에 yaml env_config.rewards, role_gamma = role SMDP 할인,
+    γ = 최상위 gamma) — train.py / main_gui.py 시작 출력 (설정 반영 확인용)."""
+    from env.role.simulation import EVENTS_DEFAULTS, REWARDS_DEFAULTS
     env = cfg.get("env_config") or {}
     given = env.get("rewards") or {}
-    rw = {h: dict(REWARDS_DEFAULTS[h], **(given.get(h) or {})) for h in REWARDS_DEFAULTS}
+    rw = {h: dict(REWARDS_DEFAULTS[h], **{k: v for k, v in (given.get(h) or {}).items() if k in REWARDS_DEFAULTS[h]})
+          for h in REWARDS_DEFAULTS}
     r, s, e = rw["role"], rw["rescue"], rw["explore"]
-    shaping = (f"discover {r['discover_mode']} w_d={r['w_d']} feasible_only={r['discover_feasible_only']} "
-               f"gamma_s={r['shaping_gamma']}") if r["discover_mode"] != "none" else "discover none"
-    return (f"[{tag}] rewards: role w_x={r['w_x']} c_osc={r['c_osc']} {shaping}, "
-            f"rescue eps={s['epsilon_urgent']} w_c={s['w_c']} w_dup={s['w_dup']} f_mode={s['f_mode']}, "
-            f"explore coverage {'(1-psi_f) ' if e['psi_scale'] else ''}own x (1 + w_mult c) w_mult={e['w_mult']}, "
-            f"gamma={cfg.get('gamma')}, r_c_source={rw['connectivity']['r_c_source']}")
+    ev = dict(EVENTS_DEFAULTS, **(env.get("events") or {}))
+    return (f"[{tag}] rewards: role w_x={r['w_x']} timely discovery w_d={r['w_d']} T_m={r['discover_margin']} "
+            f"w_sw={r['w_sw']}, rescue eps={s['epsilon_urgent']} w_b={s['w_b']} w_c={s['w_c']} w_dup={s['w_dup']}, "
+            f"explore (1 + w_omega ω^g) direct + w_share merge w_omega={e['w_omega']} w_share={e['w_share']}, "
+            f"gamma={cfg.get('gamma')} role_gamma={cfg.get('role_gamma')}; events period={ev['period']}")
 
 
 def load_config(paths=None):
@@ -58,14 +68,21 @@ def load_config(paths=None):
     s_max = (((cfg.get("model") or {}).get("custom_model_config") or {}).get("gnn") or {}).get("s_max")
     if s_max is not None and isinstance(cfg.get("env_config"), dict):
         cfg["env_config"]["s_max"] = int(s_max)
-    if cfg.get("gamma") is not None and isinstance(cfg.get("env_config"), dict):
-        rw = cfg["env_config"].setdefault("rewards", {})
-        rw["role"] = dict(rw.get("role") or {}, shaping_gamma=float(cfg["gamma"]))
+    if isinstance(cfg.get("env_config"), dict):
+        sync_order_alpha(cfg["env_config"], cfg.setdefault("model", {}).setdefault("custom_model_config", {}))
+    if cfg.get("role_gamma") is not None:
+        cfg.setdefault("model", {}).setdefault("custom_model_config", {})["role_gamma"] = float(cfg["role_gamma"])
     return cfg
 
 
-def check_shaping_gamma(cfg):
-    """학습 시작 확인: env_config.rewards.role.shaping_gamma == 최상위 gamma (다르면 shaping 이 telescoping 되지 않음)."""
-    g = ((((cfg.get("env_config") or {}).get("rewards") or {}).get("role") or {}).get("shaping_gamma"))
-    if g is None or cfg.get("gamma") is None or abs(float(g) - float(cfg["gamma"])) > 1e-12:
-        raise SystemExit(f"[train] rewards.role.shaping_gamma={g} != gamma={cfg.get('gamma')} — 발견 shaping 의 γ 는 학습 γ 와 같아야 함")
+def order_alpha(env_config):
+    """env_config.explore.order_dist_alpha (없으면 env 기본값)."""
+    from env.role.explore import EXPLORE_DEFAULTS
+    return float(((env_config or {}).get("explore") or {}).get("order_dist_alpha", EXPLORE_DEFAULTS["order_dist_alpha"]))
+
+
+def sync_order_alpha(env_config, model_config):
+    """모델 순차 디코딩의 α = env 의 α (model_config = custom_model_config, 제자리 수정)."""
+    model_config["order_dist_alpha"] = order_alpha(env_config)
+    return model_config
+

@@ -1,20 +1,22 @@
-"""세 네트워크 (역할 선택 / 생존자 할당 / frontier 할당) 의 이종 그래프 GNN + 연결성 보상 점검 (CPU 로 충분).
+"""두 네트워크 (역할 선택 / task (하위 할당)) 의 이종 그래프 GNN + 연결성 보상 점검 (CPU 로 충분).
 
     python -m tests.role.test_gnn
 
 [1] 그래프 구성 (모델이 직접 env 를 굴리며 순차 디코딩 trace 를 매 step 검사):
-    노드 · 간선 차원 (U 12, S 3, K 3 / UU 4, US 3, UK 2, SS 3, KK 3), 네트워크별 U 노드 집합 (역할 = 그룹 전체, 생존자 할당 =
-    그룹의 RESCUE UAV, frontier = 그룹의 EXPLORE UAV), S 노드 = 그룹이 아는 생존자만, 값: 절대 위치, ρ / η / ν, depot BFS,
-    U–S BFS 와 ETA 기반 σ, 목표 중복 간선 (차례 처음 = 관측의 목표 / 슬롯 기준), 앞 차례 RESCUE 결정이 뒤 그래프에 반영
+    노드 · 간선 차원 (U 12, S 3, F 3 / UU 4, US 3, UF 2, SS 3, FF 3, SF 3), U 노드 = 그룹 (linked 1) + 메모리 노드 (linked 0,
+    역할 무관, 두 네트워크 같음), S 노드 = 그룹이 아는 생존자만, 값: 연결 노드 절대 위치 / 메모리 노드 기록 위치, depot BFS, ω^g,
+    그룹 context [ρ, η, ν, t / T_max], U–S BFS 와 ETA 기반 σ (메모리 노드 = 기록 위치 · 용량), 목표 중복 간선 (차례 처음 = 관측의 목표 /
+    슬롯 기준, 메모리 노드는 기록된 목표), 앞 차례 RESCUE 결정이 뒤 그래프에 반영
 [1b] σ: 용량 0 이면 depot 경유 ETA = BFS(l, depot) + BFS(depot, s), 용량 > 0 이면 ETA = BFS(l, s)
-[2] attention 집계 (와 mean_max) 순열 불변, 패딩 노드 무영향 (출력 0), U–S 간선 갱신도 순열 불변
+[2] attention 집계 순열 불변, 패딩 노드 무영향 (출력 0), U–S 간선 갱신도 순열 불변
 [3] 2-hop: A–B–C 사슬에서 L = 1 이면 C 가 A 에 안 닿고 L = 2 면 닿음
-[4] 개인 연결도 c_i = (|comp(i)| - 1) / (N - 1): 5 대가 {3, 2} -> 3 쪽 0.5, 2 쪽 0.25, 한 대 -> 0
-[5] 보상: rescue F > 0 이면 개인 보너스 0 (c̄ 무관), F = 0 이면 c̄ 0 -> 1 에 w_c 만큼, explore Δcov = 0 이면 c 와 무관하게 0
-[6] 제거된 모델 옵션 / 잘못된 gnn.aggr 을 주면 읽기 쉬운 에러
-[7] kNN 동률 (S–S / K–K): k 번째 이웃과 거리가 같은 이웃은 모두 포함, 노드 순서를 섞어도 인접 · GNN 출력이 같음
+[4] 그룹 연결도 ω^g_i = (|U_i| - 1) / (|U| - 1) (U_i = 통신 그룹): 그룹 {3, 2} -> 3 쪽 0.5, 2 쪽 0.25
+[5] 보상: rescue 구조 완료 옵션에서 F_excess > 0 이면 개인 보너스 0 (ω̄^g 무관), F_excess = 0 이면 ω̄^g 0 -> 1 에 w_b w_c / N_T 만큼,
+     에피소드 끝으로 닫힌 옵션은 0, explore 새 셀이 없으면 연결도와 무관하게 0
+[6] 삭제된 / 모르는 모델 옵션은 에러 없이 무시
+[7] kNN 동률 (S–S / F–F / S–F): k 번째 이웃과 거리가 같은 이웃은 모두 포함, 노드 순서를 섞어도 인접 · GNN 출력이 같음
 [8] 크기 특징 size_feat(n) = min(1, log(1 + n) / log(1 + 100))
-[9] 세 네트워크는 파라미터를 공유하지 않고, 각 head loss 는 자기 네트워크에만 gradient 를 준다
+[9] 두 네트워크는 파라미터를 공유하지 않고, 각 head loss 는 자기 네트워크에만 gradient 를 준다
 """
 import copy
 
@@ -24,15 +26,16 @@ from ray.rllib.models import ModelCatalog
 
 from env.core.modes import Mode
 from env.core.targets import deadline
-from env.role.graph_obs import EKK, ESS, EUK, EUS, EUU, FK, FS, FU
+from env.role.graph_obs import EFF, ESF, ESS, EUF, EUS, EUU, FF, FS, FU
 from env.role.gym_env import RoleEnv
 from models.role.gnn import HeteroGNN
-from models.role.net import BASE, REL_US
+from models.role.net import BASE
 from models.role.rllib_model import RoleModel
 from training.catalog import register_all
 from training.config_loader import load_config
 
-U_ROLE, U_GOAL, U_DEPOT = slice(6, 9), slice(9, 11), 11
+U_CAP, U_ROLE, U_GOAL, U_DEPOT, U_OMEGA, U_LINK, U_AGE = 2, slice(3, 6), slice(6, 8), 8, 9, 10, 11
+REL_US = (("S2U", "S", "U", "US"), ("U2S", "U", "S", "US"), ("U2U", "U", "U", "UU"), ("S2S", "S", "S", "SS"))   # GNN 단위 점검용
 
 
 def make(n_agents=None, seed=0):
@@ -40,7 +43,7 @@ def make(n_agents=None, seed=0):
     ec = copy.deepcopy(cfg["env_config"])
     if n_agents:
         ec["agents"] = [dict(ec["agents"][0]) for _ in range(n_agents)]
-    ec["policy_mode"] = {"role": "learned", "rescue": "learned", "explore": "learned"}
+    ec["policy_mode"] = {"role": "learned", "task": "learned"}
     env = RoleEnv(ec)
     prep = ModelCatalog.get_preprocessor_for_space(env.observation_space)
     torch.manual_seed(seed)
@@ -57,7 +60,8 @@ def check_graph(steps=200):
     env.seed(1)
     obs = env.reset()
     sim = env.sim
-    n_rows = n_seq = n_ov = 0
+    T = sim.s_max
+    n_rows = n_seq = n_ov = n_mem = 0
     kinds = set()
     for t in range(steps):
         trace = []
@@ -74,64 +78,80 @@ def check_graph(steps=200):
             g, st = e["graph"], e["stage"]
             kinds.add(st)
             assert g["x"]["U"].shape[-1] == FU and g["edge"]["UU"].shape[-1] == EUU
+            assert g["x"]["S"].shape[-1] == FS and g["x"]["F"].shape[-1] == FF
+            assert tuple(g["edge"][k].shape[-1] for k in ("US", "UF", "SS", "FF", "SF")) == (EUS, EUF, ESS, EFF, ESF)
             for r, i in enumerate(g["ii"].tolist()):
                 n_rows += 1
                 mU = g["mask"]["U"][r].numpy()
-                role_now = g["x"]["U"][r, :, U_ROLE].argmax(-1).numpy()
-                want = group[i] if st == "role" else group[i] & (role_now == (Mode.RESCUE.value if st == "rescue"
-                                                                               else Mode.EXPLORE.value))
-                assert (mU == want).all() and mU[i], (st, mU, want)
+                mem = set(sim.memory_nodes(i))
+                link = group[i]
+                assert (mU == (link | np.isin(np.arange(sim.n_agents), list(mem)))).all() and mU[i], (st, mU)
                 xU = g["x"]["U"][r].numpy()
+                role_now = xU[:, U_ROLE].argmax(-1)
+                assert np.allclose(g["ctx"][r].numpy(), [bel["team_rho"][i], bel["team_eta"][i], bel["team_nu"][i], bel["team_time"][i]], atol=1e-6)
                 for l in np.flatnonzero(mU):
-                    assert np.allclose(xU[l, 0:2], sim.frame.normalized(sim.agents[l].pos), atol=1e-6)
-                    assert np.allclose(xU[l, 3:6], [bel["team_rho"][l], bel["team_eta"][l], bel["team_nu"][l]], atol=1e-6)
-                    assert abs(xU[l, U_DEPOT] - sim._nd(sim._dist(l, sim.depot))) < 1e-6
-                if st in ("role", "rescue"):
-                    assert g["x"]["S"].shape[-1] == FS and g["edge"]["US"].shape[-1] == EUS and g["edge"]["SS"].shape[-1] == ESS
-                    sid = [int(x) for x in ob["agents"][i]["s_ids"] if x >= 0]
-                    assert set(sid) <= set(sim._group_known(sim.comp[i])), "그룹이 모르는 생존자"
-                    eUS = g["edge"]["US"][r].numpy()
-                    for s_, ti in enumerate(sid):
-                        tg = sim.targets[ti]
-                        tau = deadline(tg)
-                        assert abs(g["x"]["S"][r, s_, 2] - min(1.0, sim.time / tau)) < 1e-6
-                        d_ds = int(sim.group_depot_field[sim.comp[i]][tg.pos])
-                        for l in np.flatnonzero(mU):
+                    assert xU[l, U_LINK] == float(link[l])
+                    if link[l]:
+                        assert np.allclose(xU[l, 0:2], sim.frame.normalized(sim.agents[l].pos), atol=1e-6) and xU[l, U_AGE] == 0
+                        assert abs(xU[l, U_DEPOT] - sim._nd(sim._dist(l, sim.depot))) < 1e-6
+                        assert abs(xU[l, U_OMEGA] - sim.group_connectivity()[l]) < 1e-6
+                    else:
+                        rec = sim.memory[i][l]
+                        n_mem += 1
+                        assert np.allclose(xU[l, 0:2], sim.frame.normalized(rec["pos"]), atol=1e-6)
+                        assert abs(xU[l, U_AGE] - min(1.0, (sim.time - rec["t"]) / sim.memory_cfg["T_age"])) < 1e-6
+                        assert int(role_now[l]) == rec["role"] and abs(xU[l, U_OMEGA] - rec["omega"]) < 1e-6
+                sid = [int(x) for x in ob["agents"][i]["s_ids"] if x >= 0]
+                assert set(sid) <= set(sim._group_known(sim.comp[i])), "그룹이 모르는 생존자"
+                eUS = g["edge"]["US"][r].numpy()
+                for s_, ti in enumerate(sid):
+                    tg = sim.targets[ti]
+                    tau = deadline(tg)
+                    assert abs(g["x"]["S"][r, s_, 2] - min(1.0, sim.time / tau)) < 1e-6
+                    d_ds = int(sim.group_depot_field[sim.comp[i]][tg.pos])
+                    for l in np.flatnonzero(mU):
+                        if link[l]:
                             d = sim._dist(l, tg.pos)
-                            assert abs(eUS[l, s_, 0] - sim._nd(d)) < 1e-6, "U–S BFS"
                             eta = sim.eta(l, d, d_ds)
-                            sig = -1.0 if eta is None else float(np.clip((tau - sim.time - eta) / tau, -1, 1))
-                            assert abs(eUS[l, s_, 1] - sig) < 1e-5, ("σ", eUS[l, s_, 1], sig)
-                else:
-                    assert g["x"]["K"].shape[-1] == FK and g["edge"]["UK"].shape[-1] == EUK and g["edge"]["KK"].shape[-1] == EKK
+                        else:                                       # 메모리 노드: 기록 위치 · 용량 (그룹 지도 BFS)
+                            rec = sim.memory[i][l]
+                            d = int(sim._memory_field(sim.comp[i], rec["pos"])[tg.pos])
+                            eta = None if d < 0 else (float(d) if rec["cap"] > 0 else
+                                                      (None if rec["depot_d"] is None or d_ds < 0 else float(rec["depot_d"] + d_ds)))
+                        assert abs(eUS[l, s_, 0] - sim._nd(d)) < 1e-6, "U–S BFS"
+                        sig = -1.0 if eta is None else float(np.clip((tau - sim.time - eta) / tau, -1, 1))
+                        assert abs(eUS[l, s_, 1] - sig) < 1e-5, ("σ", eUS[l, s_, 1], sig)
                 if st == "role" and first_role:                    # 첫 차례: 목표 중복 = 관측의 목표 생존자 / 영역 슬롯 기준
-                    tgt, slot = ob["team_target"], ob["team_slot"]
+                    tgt = [ob["team_target"][l] if link[l] else ob["agents"][i]["mem_target"][l] for l in range(sim.n_agents)]
+                    slot = [ob["team_slot"][l] if link[l] else -1 for l in range(sim.n_agents)]
                     ov = g["edge"]["UU"][r, :, :, 3].numpy()
                     for a in np.flatnonzero(mU):
                         for b in np.flatnonzero(mU):
                             want = (tgt[a] == tgt[b] and tgt[a] >= 0) or (slot[a] == slot[b] and slot[a] >= 0)
                             assert ov[a, b] == float(want), (a, b, ov[a, b], want)
                             n_ov += int(want and a != b)
-                if st == "role":                                     # 앞 차례 RESCUE 결정 반영 (역할 · 목표 · targets 간선)
+                if st == "role":                                     # 앞 차례 RESCUE 결정 반영 (역할 · 목표)
                     for j, gp in rescued_before.items():
-                        if mU[j]:
+                        if mU[j] and link[j]:
                             n_seq += 1
                             assert int(role_now[j]) == Mode.RESCUE.value and np.allclose(xU[j, U_GOAL], gp, atol=1e-6)
             if st == "role":
                 first_role = False
             if st == "rescue":
                 for i in g["ii"].tolist():
-                    s_ = int(acts["rescue"][0, i])
+                    s_ = int(acts["task"][0, i])
+                    assert s_ < T
                     rescued_before[i] = ob["agents"][i]["s_pos"][s_]
-        act = {k: [int(x) for x in m.last_out["actions"][k][0]] for k in ("role", "rescue", "explore")}
+        act = {k: [int(x) for x in m.last_out["actions"][k][0]] for k in ("role", "task")}
         obs, _, done, info = env.step(act)
         assert info["mask_violations"] == 0
         if done:
             obs = env.reset()
     m.net.debug_trace = None
-    assert kinds == {"role", "rescue", "s1"} and n_seq > 0 and n_ov > 0, (kinds, n_seq, n_ov)
-    print(f"[1] graph: {n_rows} decision graphs (role / rescue / frontier) checked — dims, per-network U sets, abs pos, "
-          f"rho / eta / nu, depot BFS, U–S BFS + ETA sigma, {n_ov} goal-overlap pairs, {n_seq} sequential RESCUE updates")
+    assert kinds == {"role", "rescue", "s1"} and n_seq > 0 and n_ov > 0 and n_mem > 0, (kinds, n_seq, n_ov, n_mem)
+    print(f"[1] graph: {n_rows} decision graphs (role / rescue / frontier) checked — dims, U = group + memory nodes "
+          f"({n_mem} memory-node rows: recorded pos / role / ω^g / age, U–S σ from record), context [ρ, η, ν, t / T_max], depot BFS, "
+          f"U–S BFS + ETA sigma, {n_ov} goal-overlap pairs, {n_seq} sequential RESCUE updates")
 
 
 def check_sigma_depot():
@@ -162,8 +182,8 @@ def check_sigma_depot():
           f"ETA {out[0][0]} (sigma {out[0][1]:.3f})")
 
 
-def us_gnn(D=32, L=2, aggr="attention", edge_update=None):
-    return HeteroGNN({"U": FU, "S": FS}, {"UU": EUU, "US": EUS, "SS": ESS}, BASE, REL_US, D, L, aggr, 4,
+def us_gnn(D=32, L=2, edge_update=None):
+    return HeteroGNN({"U": FU, "S": FS}, {"UU": EUU, "US": EUS, "SS": ESS}, BASE, REL_US, D, L, 4,
                      edge_update=edge_update).eval()
 
 
@@ -206,19 +226,19 @@ def check_invariance():
     torch.manual_seed(0)
     x, mask, edge, adj = rand_graph()
     pu, ps = torch.randperm(5), torch.randperm(7)
-    for aggr, eu in (("attention", None), ("attention", "US"), ("mean_max", None)):
-        gnn = us_gnn(aggr=aggr, edge_update=eu)
+    for eu in (None, "US"):
+        gnn = us_gnn(edge_update=eu)
         h, _, e = gnn(x, mask, edge, adj)
         hp, _, ep = gnn(*permute(x, mask, edge, adj, pu, ps))
         for t, p in (("U", pu), ("S", ps)):
-            assert torch.allclose(h[t][:, p], hp[t], atol=1e-5), f"순열 불변 실패 ({aggr}, {t})"
+            assert torch.allclose(h[t][:, p], hp[t], atol=1e-5), f"순열 불변 실패 ({eu}, {t})"
         assert torch.allclose(e["US"][:, pu][:, :, ps], ep["US"], atol=1e-5), "간선 갱신 순열 불변 실패"
         hpad, _, _ = gnn(*pad(x, mask, edge, adj))
         for t in ("U", "S"):
             n = h[t].shape[1]
-            assert torch.allclose(h[t], hpad[t][:, :n], atol=1e-5), f"패딩이 결과를 바꿈 ({aggr}, {t})"
+            assert torch.allclose(h[t], hpad[t][:, :n], atol=1e-5), f"패딩이 결과를 바꿈 ({eu}, {t})"
             assert (hpad[t][:, n:] == 0).all(), "패딩 노드 출력이 0 이 아님"
-    print("[2] attention (and mean_max, and U–S edge update) permutation invariant over U / S; padding has no effect "
+    print("[2] attention (and U–S edge update) permutation invariant over U / S; padding has no effect "
           "(padding outputs 0)")
 
 
@@ -246,8 +266,8 @@ def check_independent_nets():
     nets = net.head_networks()
     ids = {h: {id(p) for p in n.parameters()} for h, n in nets.items()}
     hs = list(ids)
-    for a in range(3):
-        for b in range(a + 1, 3):
+    for a in range(len(hs)):
+        for b in range(a + 1, len(hs)):
             assert not (ids[hs[a]] & ids[hs[b]]), f"{hs[a]} / {hs[b]} 가 파라미터를 공유"
     params = {h: list(n.parameters()) for h, n in nets.items()}
     got = {}
@@ -259,7 +279,7 @@ def check_independent_nets():
             out = m.last_out
             ob = env.sim._obs_cache
             needed = torch.as_tensor(np.array([a["role_needed"][0] for a in ob["agents"]]) > 0.5)[None]
-            masks = {"role": needed, "rescue": needed & (out["actions"]["role"] == 1), "explore": out["stage"]["s1"]}
+            masks = {"role": needed, "task": out["stage"]["rescue"] | out["stage"]["s1"]}
             for h, mk in masks.items():
                 lg = out["logits"][h]
                 mk = mk & ((lg > -1e8).sum(-1) >= 2)
@@ -272,56 +292,63 @@ def check_independent_nets():
                     gr = torch.autograd.grad(loss, ps, retain_graph=True, allow_unused=True)
                     norms[h2] = float(sum((x ** 2).sum() for x in gr if x is not None) ** 0.5) if any(x is not None for x in gr) else 0.0
                 got[h] = norms
-            act = {k: [int(x) for x in out["actions"][k][0]] for k in ("role", "rescue", "explore")}
+            act = {k: [int(x) for x in out["actions"][k][0]] for k in ("role", "task")}
             obs, _, done, _ = env.step(act)
-            if len(got) == 3 or done:
+            if len(got) == 2 or done:
                 break
-        if len(got) == 3:
+        if len(got) == 2:
             break
-    assert len(got) == 3, got
+    assert len(got) == 2, got
     for h, norms in got.items():
         assert norms[h] > 0 and all(v == 0.0 for h2, v in norms.items() if h2 != h), (h, norms)
-    print("[9] three networks share no parameters; head loss gradients reach only their own network: "
+    print("[9] two networks (role / task) share no parameters; head loss gradients reach only their own network: "
           + ", ".join(f"{h} -> own {n[h]:.2e}, others {max(v for k, v in n.items() if k != h):.0e}" for h, n in got.items()))
 
 
 
 def check_connectivity():
-    """개인 연결도 c_i: 5 대가 {3, 2} 로 나뉘면 3 쪽 0.5, 2 쪽 0.25, 한 대면 0."""
-    from env.role.connectivity import personal_connectivity
-    R = 10.0
-    pts = [(0, 0), (0, R), (0, 2 * R), (100, 0), (100, R)]
-    c = personal_connectivity(pts, R)
+    """그룹 연결도 ω^g: 5 대가 통신 그룹 {3, 2} 로 나뉘면 3 쪽 0.5, 2 쪽 0.25."""
+    env, _, _ = make()
+    sim = env.sim
+    env.seed(0)
+    env.reset()
+    sim.comp, sim.groups = [0, 0, 0, 1, 1], [[0, 1, 2], [3, 4]]
+    c = sim.group_connectivity()
     assert c == [0.5, 0.5, 0.5, 0.25, 0.25], c
-    assert personal_connectivity([(0, 0)], R) == [0.0]
-    print(f"[4] personal connectivity: 5 UAVs split {{3, 2}} -> {c}; single UAV -> [0.0]")
+    print(f"[4] group connectivity: groups {{3, 2}} -> {c}")
 
 
 def check_rewards():
-    """rescue 개인 보너스: F > 0 이면 c̄ 와 무관하게 0, F = 0 이면 c̄ 0 -> 1 에 w_c 만큼. explore: Δcov = 0 이면 c 와 무관하게 0."""
+    """rescue 개인 보너스 (구조 완료로 끝난 옵션만): F > 0 이면 ω̄^g 와 무관하게 0, F = 0 이면 ω̄^g 0 -> 1 에 w_b w_c / N_T 만큼,
+    에피소드 끝으로 닫히면 0. explore: 새 셀이 없으면 ω^g 와 무관하게 0."""
+    from types import SimpleNamespace
     env, _, _ = make()
     sim = env.sim
     env.seed(2)
     env.reset()
-    w_c = float(sim.rewards_cfg["rescue"]["w_c"])
+    rc = sim.rewards_cfg["rescue"]
+    w_c, w_b, n_t = float(rc["w_c"]), float(rc["w_b"]), len(sim.targets)
     n = sim.n_agents
 
-    def bonus(F, c):
+    def bonus(F, c, rescued=True):
         sim._bonus_pending = [0.0] * n
-        sim._res_opt = [{"F": F, "d": 0.2, "csum": 0.0, "n": 0}] + [None] * (n - 1)
-        sim._rescue_options([c] + [0.0] * (n - 1), [], True)                 # 옵션 1 step, 에피소드 끝으로 닫힘
+        sim._res_opt = [{"F": F, "d": 0.2, "wsum": 0.0, "n": 0}] + [None] * (n - 1)
+        by = [SimpleNamespace(agent=0)] if rescued else []                # 옵션 1 step, 구조 완료 (또는 에피소드 끝) 로 닫힘
+        sim._rescue_options([c] + [0.0] * (n - 1), by, True)
         return sim._bonus_pending[0]
     f_lo, f_hi = bonus(1, 0.0), bonus(1, 1.0)
     z_lo, z_hi = bonus(0, 0.0), bonus(0, 1.0)
-    assert f_lo == f_hi == 0.0 and abs((z_hi - z_lo) - w_c) < 1e-12, (f_lo, f_hi, z_lo, z_hi)
-    sim.knowledge.new_sets = [set() for _ in range(n)]                       # Δcov = 0
+    assert f_lo == f_hi == 0.0 and abs((z_hi - z_lo) - w_b * w_c / n_t) < 1e-12, (f_lo, f_hi, z_lo, z_hi)
+    assert bonus(0, 1.0, rescued=False) == 0.0                                   # 구조 완료가 아니면 0
+    sim._prev_free = [f.copy() for f in sim.knowledge.known_free]            # 새로 아는 셀 없음
+    sim.knowledge.last_visible = [set() for _ in range(n)]
     for c in ([0.0] * n, [1.0] * n):
-        sim.personal_connectivity = lambda c=c: c
+        sim.group_connectivity = lambda c=c: c
         e = sim.role_rewards([], [], explore_active=[True] * n)["explore"]
         assert e == [0.0] * n, e
-    del sim.personal_connectivity
-    print(f"[5] rescue F > 0: bonus {f_lo} (c̄ 0) / {f_hi} (c̄ 1); F = 0: Δbonus(c̄ 0 -> 1) = {z_hi - z_lo:.3f} (w_c {w_c}); "
-          f"explore dcov = 0 -> reward 0 for any c")
+    del sim.group_connectivity
+    print(f"[5] rescue (rescue-completed option) F > 0: bonus {f_lo} (ω̄ 0) / {f_hi} (ω̄ 1); F = 0: Δbonus(ω̄ 0 -> 1) = "
+          f"{z_hi - z_lo:.4f} (= w_b w_c / N_T); closed at episode end -> 0; explore with no new cells -> reward 0 for any ω^g")
 
 
 def check_size_feat():
@@ -335,22 +362,12 @@ def check_size_feat():
 
 
 def check_removed_options():
-    from models.role.net import resolve_model_options
-    for opt in ({"role": {"arch": "capam"}}, {"rescue": {"embed_dim": 128}}, {"explore": {"knn_k": 6}},
-                {"share_context": False}, {"env_features": {}}, {"role": {"role_encoder": "shared"}}):
-        try:
-            resolve_model_options(opt)
-        except ValueError as e:
-            assert "제거된 옵션" in str(e), e
-        else:
-            raise AssertionError(f"{opt} 에러 안 남")
-    try:
-        resolve_model_options({"gnn": {"aggr": "sum"}})
-    except ValueError as e:
-        assert "gnn.aggr" in str(e)
-    else:
-        raise AssertionError("gnn.aggr 오류 안 남")
-    print("[6] removed model options / unknown gnn.aggr -> readable error")
+    """삭제된 / 모르는 모델 옵션 (예전 config 에 남은 키) 은 에러 없이 무시."""
+    from models.role.net import resolve_model_options as rmo
+    out = rmo({"rescue": {"n_heads": 8}, "explore": {"clip": 5.0}, "gnn": {"aggr": "mean_max"}, "share_context": False,
+               "task": {"embed_dim": 128}})
+    assert "rescue" not in out and "aggr" not in out["gnn"] and "embed_dim" not in out["task"]
+    print("[6] removed / unknown model options (old rescue / explore network keys, gnn.aggr, ...) -> ignored")
 
 
 def check_knn_ties():

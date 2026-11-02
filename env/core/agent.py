@@ -70,13 +70,13 @@ class Robot:
         # ---- 할당 상태 (role / rescue / explore 결정의 결과) ----
         self.capacity_max = capacity
         self.capacity = capacity              # 잔여 구호품 c^i
-        self._reset_alloc_state()
+        self._reset_assign_state()
         self.alive = True
 
         # env/core/knowledge.py 가 sense/comm 처리 후 채운다
         self.local_window = None            # 자기 중심 고해상도 크롭 (S,S,C), 북쪽 = 위쪽 (critic local 입력)
 
-    def _reset_alloc_state(self):
+    def _reset_assign_state(self):
         self.mode = Mode.EXPLORE             # 현재 역할
         self.assigned_target = None          # RESCUE 일 때 Target index
         self.goal = None                     # 현재 이동 목표점 (row, col)
@@ -88,7 +88,7 @@ class Robot:
         self.pos = tuple(self.start_pos)
         self.visited = {self.pos}
         self.capacity = self.capacity_max
-        self._reset_alloc_state()
+        self._reset_assign_state()
         self.alive = True
         self.local_window = None
 

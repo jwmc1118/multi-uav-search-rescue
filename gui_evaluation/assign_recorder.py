@@ -1,6 +1,6 @@
-"""임무 할당 기록기 — 에피소드 동안 UAV 상태 / 이벤트 / 조난자 / 팀 지표를 모은다 (gui_evaluation/alloc_plots.py 의 입력).
+"""임무 할당 기록기 — 에피소드 동안 UAV 상태 / 이벤트 / 조난자 / 팀 지표를 모은다 (gui_evaluation/assign_plots.py 의 입력).
 
-RoleSimulation 에 붙여 쓴다:  sim.recorder = AllocRecorder(); sim.recorder.on_reset(sim)
+RoleSimulation 에 붙여 쓴다:  sim.recorder = AssignRecorder(); sim.recorder.on_reset(sim)
 그러면 sim.reset() 이 on_reset 을, 매 tick 의 _step_role() 끝 (step / step_explicit 공통)이 on_step 을 호출한다.
 GUI 의 Reset / Change Map / Load / Targets 는 모두 sim.reset() 을 거치므로 기록도 함께 초기화된다.
 학습 환경에서는 recorder 가 None 이라 비용이 없다.
@@ -34,7 +34,7 @@ def _components(adj):
     return comp
 
 
-class AllocRecorder:
+class AssignRecorder:
     def __init__(self, policy="rules", seed=None):
         self.policy = policy          # 지금 결정을 내리는 정책 이름 (GUI 가 tick 마다 갱신)
         self.seed = seed
@@ -64,7 +64,6 @@ class AllocRecorder:
             "rows": sim.rows, "cols": sim.cols,
             "n_targets": len(sim.targets), "n_agents": sim.n_agents,
             "depot": list(self.depot),
-            "deadline_mode": sim.cfg.get("deadline_mode"),
             "max_episode_len": sim.cfg.get("max_episode_len"),
         }
         self._prev = [(a.mode.name, -1) for a in sim.agents]

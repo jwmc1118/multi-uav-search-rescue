@@ -1,16 +1,17 @@
 """학습된 체크포인트를 GUI/평가에서 굴리기 위한 래퍼.
 
-gui/grid_map.py (Model 버튼), main_gui.py, rule_evaluation/evaluate.py 가 .step(sim) 으로 쓴다: 모델이 그룹 순서대로 순차 디코딩한
-dict(role, rescue, explore) 를 sim.step_explicit() 로 그대로 넣는다 (explore 2 단계는 env 의 κ Hungarian).
+gui/grid_map.py (Model 버튼), main_gui.py 가 .step(sim) 으로 쓴다: 모델이 그룹 순서대로 순차 디코딩한 dict(role, task) 를
+sim.step_explicit() 로 그대로 넣는다 (explore 2 단계는 env 의 거리 Hungarian).
 ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡아 상태메시지로 처리한다.
 
-행동 선택 방식 mode: "greedy" (기본, 세 헤드 argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
+행동 선택 방식 mode: "greedy" (기본, 두 head argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
 
 실행 환경 설정 두 가지:
     env_priority=True  (main_gui.py / GUI Model 버튼): 호출자 env_config (main 전용 yaml) 를 그대로 쓴다. 관측 차원 · 네트워크
                        구조를 정하는 값 (structure_diff) 이 체크포인트와 다르면 어떤 키가 다른지 에러. 입력 정규화 분모
                        (NORM_KEYS) 가 다르면 경고만 (self.warnings).
-    env_priority=False (evaluation 스크립트): 체크포인트 env_config 를 기본으로 호출자 값으로 덮어쓰되 SHAPE_KEYS 는 체크포인트 값.
+    env_priority=False (evaluation 스크립트): 호출자 env_config (평가 yaml) 를 그대로 쓰되 SHAPE_KEYS 만 체크포인트 값
+                       (env_config 가 None 이면 체크포인트 env_config).
 
 학습 때와 다른 UAV 수 (N) 로 실행:
     모델 파라미터는 N 과 무관하다 (모든 텐서 shape 가 N 독립 — 에이전트 축은 per-agent 공유 모듈 / attention / pooling).
@@ -29,21 +30,20 @@ import numpy as np
 SHAPE_KEYS = ("max_targets", "s_max", "state_size", "local_channels", "global_downsample", "rows", "cols", "max_episode_len")
 # 입력 정규화 분모 — 달라도 실행은 되지만 학습 때와 입력 스케일이 달라진다 (env_priority 에서 경고)
 NORM_KEYS = ("max_episode_len", "d_max", "rows", "cols", "explore.size_ref")
-ACTOR_PREFIXES = ("net.role_net.", "net.rescue_net.", "net.explore_net.")       # 세 actor 네트워크 (critic 제외)
+ACTOR_PREFIXES = ("net.role_net.", "net.task_net.")       # 두 actor 네트워크 (critic 제외)
 MODES = ("greedy", "sample")
 
 
 def is_role_config(train_cfg):
-    """계층 구조 (Role / Rescue / Explore) 체크포인트인가 — 예전 구조 (env: rescue) 체크포인트는 불러올 수 없다."""
+    """계층 구조 (role / task) 체크포인트인가 — 예전 구조 (env: rescue) 체크포인트는 불러올 수 없다."""
     return train_cfg.get("env") == "rescue_role"
 
 
 def runtime_env_config(train_env, caller_env=None, free_keys=()):
-    """실행용 env_config = 체크포인트 env_config 를 기본으로 호출자 값으로 덮어쓰되 SHAPE_KEYS 는 체크포인트 값.
-    free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (scale 평가: rows / cols / max_targets / max_episode_len —
-    모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
-    cfg = dict(train_env)
-    cfg.update(caller_env or {})
+    """실행용 env_config = 호출자 env_config (평가 yaml 등) 그대로, SHAPE_KEYS (+ cluster.k_max) 만 체크포인트 값으로 고정.
+    호출자 값이 없으면 (None) 체크포인트 env_config. free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (scale 평가: rows / cols /
+    max_targets / max_episode_len — 모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
+    cfg = dict(train_env if caller_env is None else caller_env)
     warnings = []
     for k in SHAPE_KEYS:
         if k in free_keys:
@@ -70,10 +70,10 @@ def _get(cfg, key, default=None):
 def structure_diff(train_cfg, env_config, model_config=None):
     """관측 차원 · 네트워크 구조를 정하는 값 중 체크포인트와 실행 설정이 다른 것 [(키, 체크포인트 값, 실행 값)].
     env: max_targets, s_max, cluster.k_max, explore.n_sub_max.
-    model (model_config 를 주면): activation, gnn (embed_dim / n_layers / knn_k / s_max / aggr), 헤드별 n_heads."""
+    model (model_config 를 주면): activation, gnn (embed_dim / n_layers / knn_k / s_max / attn_heads)."""
     from env.role.explore import EXPLORE_DEFAULTS
     from env.role.simulation import CLUSTER_DEFAULTS
-    from models.role.net import ROLE_HEADS, resolve_model_options
+    from models.role.net import resolve_model_options
     te = train_cfg.get("env_config") or {}
     out = []
 
@@ -92,8 +92,6 @@ def structure_diff(train_cfg, env_config, model_config=None):
         chk("model.activation", ma["activation"], mb["activation"])
         for k in ma["gnn"]:
             chk(f"model.gnn.{k}", ma["gnn"][k], mb["gnn"].get(k))
-        for h in ROLE_HEADS:
-            chk(f"model.{h}.n_heads", ma[h]["n_heads"], mb[h]["n_heads"])
     return out
 
 
@@ -134,26 +132,8 @@ def restore_or_explain(trainer, checkpoint_path):
             f"{RECENT_CHANGES}") from None
 
 
-RECENT_CHANGES = ("    (최근 변경: 보상 재설계 (explore 커버리지 옵션 / rescue S - F / role 구조 · 만료 + 진동), 그룹 기준 EXPLORE 마스크,\n"
-                  "     role g_exp 2 -> 3 (그룹 발견 비율 ψ^{f,G}); 크기 특징 로그 정규화 (size_ref);\n"
-                  "     그 전: encoder = 세 head 공유 이종 그래프 GNN (CapAM encoder / Context / 특징 레지스트리 node_feats 제거,\n"
-                  "     관측 = 그래프 노드 / 간선 표, rescue 행동 = S 노드 s_max), rescue / explore 보상에 연결성 C;\n"
-                  "     그 전: 결정 순서를 모델이 계산 (관측 dec_rank / explore_seg_taken 제거, explore_size /\n"
-                  "     explore_seg_size 추가, team_ctx 9 -> 8);\n"
-                  "     그 전: 최종 입력 — 생존자 노드 4 [rel_pos, bfs_dist, slack], explore 노드 6 [rel_pos, bfs_dist, size,\n"
-                  "     n_assigned, current_flag], Context ξ 9 (group_size / mean_neighbor_dist 제거), explore_kind 3 -> 1,\n"
-                  "     role encoder 항상 공유 (role_encoder 옵션 제거), h_RET 선형 출력;\n"
-                  "     그 전: 노드 특징 레지스트리 node_feats, encoder 간선 특징, explore stage 임베딩, role g_ret 제거)")
-
-
-def check_compatible(train_cfg, checkpoint_path):
-    """체크포인트 config 가 지금 코드의 모델 옵션으로 해석되는지 (제거된 옵션이면 읽기 쉬운 에러)."""
-    from models.role.net import resolve_model_options
-    try:
-        resolve_model_options((train_cfg.get("model") or {}).get("custom_model_config"))
-    except ValueError as e:
-        raise RuntimeError(f"예전 구조의 체크포인트라 지금 코드와 호환되지 않습니다 — 새로 학습하세요.\n체크포인트: "
-                           f"{checkpoint_path}\n원인: {e}\n{RECENT_CHANGES}") from None
+RECENT_CHANGES = ("    (지금 구조: role / task 두 네트워크, task 후보 S ∪ F, U 노드 12 (linked / age, 메모리 노드), 그룹 context [ρ, η, ν, t / T_max],\n"
+                  "     S–F 간선, task critic = 공유 trunk + V^res / V^exp — 이 구조 전에 저장된 체크포인트는 로드 불가)")
 
 
 def load_train_config(checkpoint_path):
@@ -217,12 +197,14 @@ def load_weights(model, weights, actor_prefixes=ACTOR_PREFIXES):
     actor_w = {k for k in weights if k.startswith(actor_prefixes)}
     if actor_t != actor_w:
         raise RuntimeError(f"actor 파라미터 이름 불일치: 모델에만 {sorted(actor_t - actor_w)[:5]}, "
-                           f"체크포인트에만 {sorted(actor_w - actor_t)[:5]}")
+                           f"체크포인트에만 {sorted(actor_w - actor_t)[:5]} — 네트워크 구조가 바뀐 뒤의 체크포인트가 아니면 "
+                           f"로드할 수 없습니다 (새로 학습하세요).\n{RECENT_CHANGES}")
     bad = [(k, tuple(weights[k].shape), tuple(target[k].shape)) for k in actor_t
            if tuple(weights[k].shape) != tuple(target[k].shape)]
     if bad:
         raise RuntimeError("actor 파라미터 shape 불일치 (체크포인트 -> 실행 모델): "
-                           + ", ".join(f"{k} {a}->{b}" for k, a, b in bad[:5]))
+                           + ", ".join(f"{k} {a}->{b}" for k, a, b in bad[:5])
+                           + f" — 입력 차원 / 네트워크 구조가 다른 체크포인트입니다 (새로 학습하세요).\n{RECENT_CHANGES}")
     load, skipped = {}, []
     for k, v in weights.items():
         if k in target and tuple(v.shape) == tuple(target[k].shape):
@@ -256,7 +238,6 @@ class CheckpointPolicy:
                      include_dashboard=False)
         register_all()
 
-        check_compatible(train_cfg, checkpoint_path)
         train_env = train_cfg.get("env_config", {})
         if env_priority:
             diff = structure_diff(train_cfg, env_config or {}, model_config)
@@ -306,6 +287,8 @@ class CheckpointPolicy:
         cfg["explore"] = False
         cfg["num_gpus"] = 0            # 추론은 CPU (학습 때 num_gpus: 1 이어도)
         cfg["env_config"] = copy.deepcopy(env_config)
+        from training.config_loader import sync_order_alpha
+        sync_order_alpha(env_config, cfg.setdefault("model", {}).setdefault("custom_model_config", {}))   # explore 차례 α = env 값
         if env_config.get("s_max") is not None:        # S 노드 수는 env_config.s_max = model.gnn.s_max (RoleNet 이 확인). 가중치는 무관
             mc = cfg.setdefault("model", {}).setdefault("custom_model_config", {})
             mc["gnn"] = dict(mc.get("gnn") or {}, s_max=int(env_config["s_max"]))
@@ -330,7 +313,7 @@ class CheckpointPolicy:
         if mode not in MODES:
             raise ValueError(f"mode {mode!r} — {MODES}")
         self.mode = mode
-        self.trainer.get_policy().model.greedy = mode == "greedy"     # 세 헤드 모두 greedy / 샘플링 (이동은 BFS)
+        self.trainer.get_policy().model.greedy = mode == "greedy"     # 두 head 모두 greedy / 샘플링 (이동은 BFS)
 
     @staticmethod
     def seed(seed):
@@ -345,18 +328,20 @@ class CheckpointPolicy:
         return sim.step_explicit(self.act(sim))
 
     def act(self, sim):
-        """계층 구조: 모델이 그룹 순서대로 순차 디코딩한 dict(role, rescue, explore). UAV 별 출력은 self.last 에.
-        self.last[i] = {role_probs (3,), rescue_top / explore_top [(슬롯, 확률)] 상위 3, value_role,
-                        s1 (이번 step explore 1 단계 결정 여부)}."""
+        """계층 구조: 모델이 그룹 순서대로 순차 디코딩한 dict(role, task). UAV 별 출력은 self.last 에.
+        self.last[i] = {role_probs (3,), rescue_top / explore_top [(S / F 슬롯, 확률)] 상위 3 (task (하위 할당) 분포의 S 쪽 / F 쪽),
+                        value_role, s1 (이번 step explore 1 단계 결정 여부)}."""
         import torch
         obs = sim.rl_observation()
         action, _, extra = self.trainer.compute_action(obs, explore=True, full_fetch=True)
-        out = {h: np.asarray(action[h]).reshape(-1) for h in ("role", "rescue", "explore")}
+        out = {h: np.asarray(action[h]).reshape(-1) for h in ("role", "task")}
         model = self.trainer.get_policy().model
         lo = model.last_out
         if lo is not None:
             with torch.no_grad():
-                pr = {h: torch.softmax(lo["logits"][h][0], -1).cpu().numpy() for h in ("role", "rescue", "explore")}
+                pr = {h: torch.softmax(lo["logits"][h][0], -1).cpu().numpy() for h in ("role", "task")}
+                T = model.max_targets
+                pr["rescue"], pr["explore"] = pr["task"][:, :T], pr["task"][:, T:]
                 vr = lo["values"]["role"][0].cpu().numpy()
                 s1 = lo["stage"]["s1"][0].cpu().numpy()
             top = lambda p: [(int(k), float(p[k])) for k in np.argsort(-p)[:3] if p[k] > 1e-4]

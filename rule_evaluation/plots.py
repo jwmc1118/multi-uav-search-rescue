@@ -1,12 +1,12 @@
-"""main_rule 그림 · 표 (eval_common/paper_style.py 스타일, 그림마다 PDF + PNG + 원자료 CSV).
+"""main_rule 그림 · 표 (eval_common/paper_style.py 스타일, 그림마다 PDF + PNG + 원자료 CSV). 실행한 정책 (--run) 만 그린다.
 
     1 fig_metrics_ci       rescue / discover / expire rate, explored — 정책별 평균 · 95% CI 점그래프 (패널 4 개)
     2 fig_rescue_violin    구조율 분포 violin + seed 별 점
-    3 fig_paired_scatter   seed 별 구조율 (x = 규칙, y = 모델), y = x 대각선 — 위쪽이 모델 우세
+    3 fig_paired_scatter   seed 별 구조율 (x = 규칙, y = 모델), y = x 대각선 — 위쪽이 모델 우세          (both 만)
     4 fig_cumulative       step 에 따른 누적 구조율 · 발견율 (평균 + 95% CI 음영)
-    5 fig_role_mix         모델의 역할 비율 시계열 (누적 영역)
-    6 fig_convergence      에피소드 수에 따른 구조율 짝 차이 (모델 - 규칙) 평균 · 95% CI
-    summary_table.tex      지표별 평균 ± 표준편차, 차이 [95% CI], p-value (booktabs, 더 좋은 평균 굵게)
+    5 fig_role_mix         역할 비율 시계열 (누적 영역) — 모델 (rule 만 실행하면 규칙 정책)
+    6 fig_convergence      에피소드 수에 따른 구조율 짝 차이 (모델 - 규칙) 평균 · 95% CI                 (both 만)
+    summary_table.tex      지표별 평균 ± 표준편차 (both 면 + 차이 [95% CI], d_z, p-value, 더 좋은 평균 굵게)
 """
 import os
 
@@ -31,6 +31,15 @@ LABEL = {"rescue_rate": "Rescue rate", "expire_rate": "Expire rate", "discover_r
          "isolated_frac": "Isolated-UAV ratio", "expire_undiscovered_rate": "Expired undiscovered",
          "expire_unassigned_rate": "Expired unassigned", "expire_assigned_rate": "Expired while assigned"}
 POLICIES = ("rule", "model")
+NAME = {"rule": "Rule", "model": "Learned"}
+
+
+def _pols(rows):
+    """요약 행 / 에피소드 행에 있는 정책 (POLICIES 순)."""
+    if rows and "metric" in rows[0]:
+        return tuple(p for p in POLICIES if f"{p}_mean" in rows[0])
+    have = {r["policy"] for r in rows}
+    return tuple(p for p in POLICIES if p in have)
 
 
 def _sty(p):
@@ -40,17 +49,18 @@ def _sty(p):
 def fig_metrics_ci(summary, out, width="double"):
     keys = ["rescue_rate", "discover_rate", "expire_rate", "explored"]
     rows = [r for r in summary if r["metric"] in keys]
+    pols = _pols(summary)
     fig, axes = ps.figure(width, 1.9, ncols=len(rows))
     data = []
     for ax, r in zip(np.atleast_1d(axes), rows):
-        for k, p in enumerate(POLICIES):
+        for k, p in enumerate(pols):
             s = _sty(p)
             mu, lo, hi = r[f"{p}_mean"], r[f"{p}_ci_lo"], r[f"{p}_ci_hi"]
             ax.errorbar([k], [mu], yerr=[[mu - lo], [hi - mu]], fmt=s["marker"], color=s["color"], label=s["label"])
             data.append({"metric": r["metric"], "policy": p, "mean": mu, "ci_lo": lo, "ci_hi": hi, "n": r["n"]})
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(["Rule", "Learned"])
-        ax.set_xlim(-0.6, 1.6)
+        ax.set_xticks(range(len(pols)))
+        ax.set_xticklabels([NAME[p] for p in pols])
+        ax.set_xlim(-0.6, len(pols) - 0.4)
         ax.set_ylabel(LABEL[r["metric"]])
     return ps.save(fig, os.path.join(out, "fig_metrics_ci"), data)
 
@@ -59,7 +69,8 @@ def fig_rescue_violin(per, out):
     fig, ax = ps.figure("single", 2.3)
     rng = np.random.RandomState(0)
     data = []
-    for k, p in enumerate(POLICIES):
+    pols = _pols(per)
+    for k, p in enumerate(pols):
         s = _sty(p)
         x = np.array([r["rescue_rate"] for r in per if r["policy"] == p], float)
         vp = ax.violinplot([x], positions=[k], widths=0.7, showextrema=False)
@@ -70,8 +81,8 @@ def fig_rescue_violin(per, out):
         ax.scatter(k + rng.uniform(-0.12, 0.12, len(x)), x, s=7, color=s["color"], marker=s["marker"], alpha=0.8,
                    linewidths=0)
         data += [{"policy": p, "seed": r["seed"], "rescue_rate": r["rescue_rate"]} for r in per if r["policy"] == p]
-    ax.set_xticks([0, 1])
-    ax.set_xticklabels(["Rule", "Learned"])
+    ax.set_xticks(range(len(pols)))
+    ax.set_xticklabels([NAME[p] for p in pols])
     ax.set_ylabel("Rescue rate")
     return ps.save(fig, os.path.join(out, "fig_rescue_violin"), data)
 
@@ -97,7 +108,7 @@ def fig_paired_scatter(per, out):
 def fig_cumulative(tstats, out, width="double"):
     fig, axes = ps.figure(width, 2.0, ncols=2)
     for ax, key, lab in zip(axes, ("cum_rescue_rate", "cum_discover_rate"), ("Cumulative rescue rate", "Cumulative discover rate")):
-        for p in POLICIES:
+        for p in _pols(tstats):
             s = _sty(p)
             rows = [r for r in tstats if r["policy"] == p and f"{key}_mean" in r]
             t = [r["step"] for r in rows]
@@ -113,14 +124,15 @@ def fig_cumulative(tstats, out, width="double"):
 
 
 def fig_role_mix(tstats, out):
-    rows = [r for r in tstats if r["policy"] == "model" and "role_explore_mean" in r]
+    pol = "model" if "model" in _pols(tstats) else "rule"
+    rows = [r for r in tstats if r["policy"] == pol and "role_explore_mean" in r]
     t = [r["step"] for r in rows]
     ys = [[r[f"role_{k}_mean"] for r in rows] for k in ("explore", "rescue", "return")]
     fig, ax = ps.figure("single", 2.2)
     ax.stackplot(t, *ys, colors=[ps.ROLE_COLORS[k] for k in ("explore", "rescue", "return")],
                  labels=["Explore", "Rescue", "Return"], alpha=0.85, linewidth=0)
     ax.set_xlabel("Step")
-    ax.set_ylabel("Role share (learned)")
+    ax.set_ylabel(f"Role share ({NAME[pol].lower()})")
     ax.set_ylim(0, 1)
     ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
     return ps.save(fig, os.path.join(out, "fig_role_mix"),
@@ -145,6 +157,15 @@ def _fmt(x, digits=3):
 
 
 def summary_table(summary, path, n):
+    pols = _pols(summary)
+    if len(pols) < 2:                                            # 한 정책만 실행: 평균 ± 표준편차, 95 % CI
+        p = pols[0]
+        rows = [[LABEL.get(r["metric"], r["metric"].replace("_", r"\_")),
+                 f"{_fmt(r[f'{p}_mean'])} $\pm$ {_fmt(r[f'{p}_std'])}",
+                 f"[{_fmt(r[f'{p}_ci_lo'])}, {_fmt(r[f'{p}_ci_hi'])}]"] for r in summary]
+        return latex_table(path, ["Metric", NAME[p], r"95\% CI"], rows, "lcc",
+                           caption=f"{NAME[p]} policy (mean $\pm$ std over {n} episodes, 95\% bootstrap CI).",
+                           label=f"tab:{p}_only")
     header = ["Metric", "Rule", "Learned", r"$\Delta$ (learned $-$ rule) [95\% CI]", r"$d_z$ [95\% CI]", "$p$",
               r"min $p$"]
     rows = []
@@ -177,10 +198,13 @@ def make_all(per, summary, tstats, conv, out_dir, fig_cfg):
     fdir = os.path.join(out_dir, "figures")
     width = fig_cfg.get("width", "double")
     files = []
+    both = len(_pols(per)) == 2
     files += fig_metrics_ci(summary, fdir, width)
     files += fig_rescue_violin(per, fdir)
-    files += fig_paired_scatter(per, fdir)
+    if both:
+        files += fig_paired_scatter(per, fdir)
     files += fig_cumulative(tstats, fdir, width)
     files += fig_role_mix(tstats, fdir)
-    files += fig_convergence(conv, fdir)
+    if both:
+        files += fig_convergence(conv, fdir)
     return files

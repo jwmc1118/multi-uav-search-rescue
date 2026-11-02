@@ -1,20 +1,20 @@
 """그리디 정책 (policies/role_rules.py RuleDecider) 으로 계층 구조 env 를 끝까지 돌리는 baseline / 점검 스크립트.
 
-    python -m rule_evaluation.run_rules                     # env.yaml + role.yaml + explore.yaml + rescue.yaml, seed 0..199, 그리디
+    python -m rule_evaluation.run_rules                     # env.yaml + role.yaml + task.yaml, seed 0..199, 그리디
     python rule_evaluation/run_rules.py --episodes 50 --policy random
     python -m rule_evaluation.run_rules --episodes 20 --tag check   # 결과 파일 이름 = *_check (기준선 파일을 덮어쓰지 않음)
 
 에피소드 k 는 seed k 로 맵 / 조난자 / 골든타임 고정. 출력: 구조율 · 발견율 · 탐색률, 역할 비율 시계열, 이벤트별 횟수,
 평균 결정 빈도, explore 2 단계 통계 (1·2 단계 결정 수, 덩어리당 평균 m, 쪼개짐 · 합쳐짐, 통신 이탈 m 감소,
 구간 소진까지 step, 역할 전환, m >= 2 덩어리 구간 크기 변동계수 (std / mean) 와 <= 0.5 비율, 결정 후 목표 없이 멈춘
-UAV-step 수), 이벤트 통계 (재결정 UAV 수, 목표 변경, 진동, RESCUE 재결정 원인), explore 지표 (κ 평균 · 중앙값, |S_eff|/|S|,
-고른 / 가장 가까운 덩어리 거리 비, EXPLORE step 당 새 관측 셀), 담당 후보 지표 (이벤트 2 RESCUE 중 담당 후보 /
+UAV-step 수), 이벤트 통계 (재결정 UAV 수, 목표 변경, RESCUE 재결정 원인), explore 지표 (고른 / 가장 가까운 덩어리
+거리 비), 담당 후보 지표 (이벤트 "1" RESCUE 중 담당 후보 /
 담당 아닌 생존자, 담당 후보가 RESCUE 안 고름, 1 단계 담당 후보 덩어리 그대로, 이벤트 시점 배정 0 덩어리 수, 재선택 goal 유지),
 부분 귀환 통계 (횟수, 부족분, 다음 충전까지 구조 수, 용량 상태별 역할 선택 비율), 그리고 점검 — 예외 없음 / 마스크 위반 0 /
 같은 step 재결정 <= max_redecide / deadlock 없음 (제자리인 UAV 가 IDLE_LIMIT step 넘게 이어지지 않음. 그룹 지도에
 frontier 가 남았는데 depot 에서 대기하는 것도 포함 — frontier 가 없을 때의 depot 대기만 정상).
 결과: <repo>/results/rules/  episodes_<policy>.csv, summary_<policy>.csv (지표 + 에피소드 진행 10 구간 역할 비율),
-      role_timeseries_<policy>.png, events_<policy>.png, event_logs/<tag>/episode_<seed>.json (이벤트 / 목표 변경 로그)
+      role_share_timeseries_<policy>.png, events_<policy>.png, event_logs/<tag>/episode_<seed>.json (이벤트 / 목표 변경 로그)
 """
 import os
 import sys
@@ -90,22 +90,25 @@ def run_episode(sim, decider, seed):
     return {
         **{f"rw_{k}": v for k, v in rs["sum"].items()},
         "rescue_events": rs["rescue_events"], "rescue_S": rs["rescue_S"], "rescue_F": rs["rescue_F"],
-        "rescue_U_eps_size": rs["rescue_U_eps_size"], "rescue_F_unavoidable": rs["rescue_F_unavoidable"],
+        "rescue_U_eps_size": rs["rescue_U_eps_size"], "rescue_F_min": rs["rescue_F_min"],
         "rescue_bonus_rate": rs["rescue_bonus_rate"], "rescue_SF_term": rs["rescue_SF_term"],
         "rescue_bonus_term": rs["rescue_bonus_term"], "role_rescue_term": rs["role_rescue_term"],
-        "explore_term": rs["explore_term"], "explore_cov_own_return": rs["explore_return"],
+        "explore_term": rs["explore_term"], "explore_own_return": rs["explore_return"],
+        "explore_direct_cells": rs["explore_direct_cells"], "explore_share_cells": rs["explore_share_cells"],
         "explore_option_len": rs["explore_option_len"],
-        **{f"psi_f_bin{b}": v for b, v in enumerate(rs["psi_f_bins"])},
         "explore_masked_decisions": es["explore_masked_decisions"], "forced_return_all_masked": es["forced_return_all_masked"],
-        "ev5_exploration_complete": es["ev5_causes"]["exploration_complete"],
-        "role_osc": rs["osc"], "role_forced": rs["forced"], "role_voluntary": rs["voluntary"],
+        "ev4_exploration_complete": es["ev4_causes"]["exploration_complete"],
+        **{f"redecide_{e}": v for e, v in es["redecide_causes"].items()}, "redecide_overlap": es["redecide_overlap"],
+        "ev1_explore": es["ev1_explore"], "ev1_merge": es["ev1_merge"], "rescue_keep_rate": es["rescue_keep_rate"],
+        "explore_keep_rate": es["explore_keep_rate"], "cap0_explore_choice": es["cap0_explore_choice"],
+        "switch_forced": rs["switch_forced"],
+        "switch_voluntary_periodic": rs["switch_voluntary_periodic"], "switch_voluntary_ev1": rs["switch_voluntary_ev1"],
         "preempt_candidates": es["preempt_candidates"], "dec_interval": es["dec_interval"], "latch_hold": es["latch_hold"],
         "link_made": es["link_made"], "link_broken": es["link_broken"], "group_size_ep": es["group_size"],
         **{f"nbr_bin{b}": v for b, v in enumerate(es["nbr_dist_hist"])},
         "dup_in": rs["dup_in"], "dup_out": rs["dup_out"],
-        "conn_real_mean": rs["conn_real_mean"], "rescue_c_bar": rs["rescue_c_bar"],
-        "explore_conn_mult": rs["explore_conn_mult"],
-        "n_groups": es["n_groups"], "survivor_truncated": es["survivor_truncated"], "ev2_rescue_nearest": es["ev2_rescue_nearest"],
+        "conn_real_mean": rs["conn_real_mean"], "rescue_omega_bar": rs["rescue_omega_bar"],
+        "n_groups": es["n_groups"], "survivor_truncated": es["survivor_truncated"], "ev1_rescue_nearest": es["ev1_rescue_nearest"],
         "seed": seed, "n_targets": len(sim.targets), "episode_len": sim.time,
         "rescue_rate": info["rescued_total"] / n_t, "expire_rate": info["expired_total"] / n_t,
         "discover_rate": info["discovered_total"] / n_t, "explored": info["explored"],
@@ -117,16 +120,15 @@ def run_episode(sim, decider, seed):
         "explore_s1": st["s1"], "explore_s2": st["s2"], "m_mean": float(np.mean(m_vals)) if m_vals else 0.0,
         "ghost_drop": st["ghost_drop"], "role_switch": st["role_switch"],
         "seg_life": float(np.mean(st["seg_life"])) if st["seg_life"] else float("nan"),
-        "redecide_uavs": es["redecide_uavs"], "goal_change": es["goal_change"], "oscillation": es["oscillation"],
+        "redecide_uavs": es["redecide_uavs"], "goal_change": es["goal_change"],
         "partial_return": es["partial_return"],
         "join_events": es["join_events"], "reselect_uavs": es["reselect_uavs"], "reselect_kept_goal": es["reselect_kept_goal"],
         "reselect_goal_change": es["reselect_goal_change"], "explore_reselect": st["reselect"],
-        "ev2_rescue_by_claim": es["ev2_rescue_by_claim"], "ev2_rescue_other": es["ev2_rescue_other"],
+        "ev1_rescue_by_claim": es["ev1_rescue_by_claim"], "ev1_rescue_other": es["ev1_rescue_other"],
         "claim_not_rescue": es["claim_not_rescue"], "s1_claim_kept": es["s1_claim_kept"], "s1_empty_blobs": es["s1_empty_blobs"],
-        "s1_participants": es["s1_participants"], "ev2_retained": es["ev2_retained"],
-        "ev2_retained_blob_changed": es["ev2_retained_blob_changed"],
-        "ev2_redecide": es["ev2_redecide"], "ev2_rescue": es["ev2_rescue"], "known_to_rescue": es["known_to_rescue"],
-        "blob_dist_ratio": es["blob_dist_ratio"], "new_cells_per_explore_step": es["new_cells_per_explore_step"],
+        "s1_participants": es["s1_participants"],
+        "ev1_redecide": es["ev1_redecide"], "ev1_rescue": es["ev1_rescue"], "known_to_rescue": es["known_to_rescue"],
+        "blob_dist_ratio": es["blob_dist_ratio"],
         **{f"res_redecide_{e}": v for e, v in es["rescue_redecide_causes"].items()},
         "partial_deficit": float(np.mean(es["partial_deficits"])) if es["partial_deficits"] else float("nan"),
         "rescued_after_partial": float(np.mean(es["rescued_after_partial"])) if es["rescued_after_partial"] else float("nan"),
@@ -141,13 +143,11 @@ def run_episode(sim, decider, seed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", nargs="*", help="config yaml (생략하면 training/config/env.yaml + role.yaml + explore.yaml + rescue.yaml)")
+    ap.add_argument("--config", nargs="*", help="config yaml (생략하면 training/config/env.yaml + role.yaml + task.yaml)")
     ap.add_argument("--episodes", type=int, default=200)
     ap.add_argument("--tag", default=None, help="결과 파일 이름 꼬리 (기본 = policy 이름)")
     ap.add_argument("--policy", default="default", choices=["default", "random"],
                     help="default = 그리디 정책 / random = 마스크 안 무작위")
-    ap.add_argument("--return-with-cap", type=int, choices=[0, 1], default=None,
-                    help="role.return_with_cap 덮어쓰기 (생략 = yaml)")
     ap.add_argument("--no-log", action="store_true", help="에피소드 이벤트 로그 JSON 저장 안 함")
     args = ap.parse_args()
 
@@ -155,8 +155,6 @@ def main():
     from policies.role_rules import RandomDecider, RuleDecider
     from training.config_loader import load_config
     cfg = load_config(args.config and [os.path.join(ROOT, p) for p in args.config])["env_config"]
-    if args.return_with_cap is not None:
-        cfg["role"] = dict(cfg.get("role") or {}, return_with_cap=bool(args.return_with_cap))
     tag_name = args.tag or args.policy
     cfg["events"] = dict(cfg.get("events") or {},
                          log_dir=None if args.no_log else os.path.join(OUT_DIR, "event_logs", tag_name))
@@ -172,25 +170,27 @@ def main():
             "role_decisions_per_uav_100", "sub_decisions_per_uav_100", "redecide_steps",
             "explore_s1", "explore_s2", "m_mean", "ghost_drop", "seg_life", "role_switch",
             "seg_cv_mean", "seg_cv_ok", "idle_no_goal",
-            "redecide_uavs", "goal_change", "oscillation",
+            "redecide_uavs", "goal_change",
             "partial_return", "partial_deficit", "rescued_after_partial",
-            "rw_role_team", "rw_role_osc", "rw_rescue_sf", "rw_rescue_bonus", "rw_rescue_dup", "rw_explore_cov",
+            "rw_role_team", "rw_role_discover", "rw_role_switch", "rw_rescue_sf", "rw_rescue_bonus", "rw_rescue_dup",
+            "rw_explore_direct", "rw_explore_share",
             "role_rescue_term", "rescue_SF_term", "rescue_bonus_term", "explore_term",
-            "rescue_S", "rescue_F", "rescue_U_eps_size", "rescue_F_unavoidable", "rescue_bonus_rate",
-            "explore_cov_own_return", "explore_option_len", "explore_masked_decisions", "forced_return_all_masked",
-            "ev5_exploration_complete",
+            "rescue_S", "rescue_F", "rescue_U_eps_size", "rescue_F_min", "rescue_bonus_rate",
+            "explore_own_return", "explore_direct_cells", "explore_share_cells", "explore_option_len", "explore_masked_decisions", "forced_return_all_masked",
+            "ev4_exploration_complete",
+            "redecide_periodic", "redecide_1", "redecide_2", "redecide_3", "redecide_4", "redecide_overlap",
+            "ev1_explore", "ev1_merge", "rescue_keep_rate", "explore_keep_rate", "cap0_explore_choice",
             "join_events", "reselect_uavs", "reselect_kept_goal", "reselect_goal_change", "explore_reselect",
-            "ev2_rescue_by_claim", "ev2_rescue_other", "claim_not_rescue", "s1_claim_kept", "s1_empty_blobs",
-            "s1_participants", "ev2_retained", "ev2_retained_blob_changed", "ev2_redecide", "ev2_rescue", "known_to_rescue", "blob_dist_ratio", "new_cells_per_explore_step",
-            "res_redecide_1", "res_redecide_2", "res_redecide_3", "res_redecide_4", "res_redecide_5",
+            "ev1_rescue_by_claim", "ev1_rescue_other", "claim_not_rescue", "s1_claim_kept", "s1_empty_blobs",
+            "s1_participants", "ev1_redecide", "ev1_rescue", "known_to_rescue", "blob_dist_ratio",
+            "res_redecide_periodic", "res_redecide_1", "res_redecide_2", "res_redecide_3", "res_redecide_4",
             "preempt_candidates", "dec_interval", "latch_hold", "link_made", "link_broken", "group_size_ep",
             "nbr_bin0", "nbr_bin1", "nbr_bin2", "nbr_bin3", "nbr_bin4",
             "rescue_events",
-            "role_osc", "role_forced", "role_voluntary", "dup_in", "dup_out",
-            "conn_real_mean", "rescue_c_bar", "explore_conn_mult", "n_groups", "ev2_rescue_nearest", "survivor_truncated"] + \
+            "switch_forced", "switch_voluntary_periodic", "switch_voluntary_ev1", "dup_in", "dup_out",
+            "conn_real_mean", "rescue_omega_bar", "n_groups", "ev1_rescue_nearest", "survivor_truncated"] + \
         [f"role_{c}_{r}" for c in ("zero", "partial", "full") for r in ("explore", "rescue", "return")]
-    print(f"\n=== {args.policy} policy, {len(eps)} episodes, N={sim.n_agents}, return_with_cap="
-          f"{sim.role_cfg['return_with_cap']} ===")
+    print(f"\n=== {args.policy} policy, {len(eps)} episodes, N={sim.n_agents} ===")
     summary = []
     for k in keys + [f"ev_{e}" for e in EVENTS + EXPLORE_EVENTS]:
         v = np.array([e[k] for e in eps], float)
@@ -254,7 +254,7 @@ def main():
     ax.set_title(f"Role ratio over time ({args.policy}, {len(eps)} episodes)", fontsize=10)
     h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
     ax.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8, frameon=False)
-    fig.tight_layout(); fig.savefig(os.path.join(OUT_DIR, f"role_timeseries{tag}.png"), dpi=200); plt.close(fig)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT_DIR, f"role_share_timeseries{tag}.png"), dpi=200); plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(6, 3))
     labels = list(EVENTS + EXPLORE_EVENTS)

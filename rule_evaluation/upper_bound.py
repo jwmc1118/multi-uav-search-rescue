@@ -7,7 +7,7 @@
 목적: 정책의 구조율(≈0.85)이 정책 문제인지, 원리적으로 못 구하는 조난자 때문인지 구분.
 
 [상한] 체크포인트 없이 동작. 학습과 같은 env 코드로 seed 0..M-1 을 reset 만 해서 맵 / depot / 조난자(위치, τ_j) 를 얻는다
-       (--checkpoint 가 있으면 그 체크포인트의 학습 env_config, 없으면 --config (기본 training/config/env.yaml + role.yaml + explore.yaml + rescue.yaml)).
+       (--checkpoint 가 있으면 그 체크포인트의 학습 env_config, 없으면 --config (기본 training/config/env.yaml + role.yaml + task.yaml)).
   구조 판정 = env 그대로: UAV 가 조난자와 같은 칸, 같은 tick 에 구조가 마감 처리보다 먼저 -> 도착 시각 <= τ_j 면 구조.
   UAV 는 depot 에서 t = 0 출발, tick 당 8방향 한 칸 (코너 컷팅 금지) -> 도착 시각 = ground truth 장애물 BFS 거리.
   d_j = depot -> 조난자 j BFS 거리,  feasible_j = d_j <= τ_j  (τ_j = env.core.targets.deadline: end_time, 없으면 golden_time)
@@ -15,7 +15,6 @@
   UB_greedy = 위치 전부 앎, UAV N 대 · 용량 c · depot 재보충 준수, 매 결정마다 "도착 시각 <= τ_j" 인 조난자 중
               마감이 가장 임박한 곳으로 이동 (용량 0 이면 depot 복귀, 이동시간 = BFS 거리, UAV 간 충돌 무시) 의 구조 비율.
               greedy 휴리스틱이라 엄밀한 최적값은 아니다 (전지적 정보 + 단순 스케줄 기준선).
-  deadline_mode = from_discovery 면 τ_j 를 발견 시각과 무관하게 golden_time 으로 근사 (경고 출력).
 
 [실패 원인] --checkpoint 를 주면 같은 seed 로 evaluate 와 같은 방식 (세 헤드 greedy) 에피소드 실행,
   만료된 조난자를 (a) infeasible (d_j > τ_j) (b) feasible 인데 끝까지 미발견 (c) 발견했지만 아무도 할당 안 함
@@ -100,8 +99,6 @@ def bounds(inst):
 def run_bounds(cfg, seeds):
     from env.role.simulation import RoleSimulation
     sim = RoleSimulation(cfg)
-    if sim.cfg["deadline_mode"] != "from_start":
-        print("[warn] deadline_mode = from_discovery: τ_j 를 golden_time 으로 근사 (발견 시각 무시) — 상한은 근사값")
     eps, tgt_rows = [], []
     for s in seeds:
         inst = episode_instance(sim, s)
@@ -158,13 +155,13 @@ def save_bounds(eps, tgt_rows, tag):
 # ---------------------------------------------------------------- 실패 원인
 
 def run_policy(ckpt, cfg, eps):
-    from gui_evaluation.alloc_recorder import AllocRecorder
+    from gui_evaluation.assign_recorder import AssignRecorder
     from env.role.simulation import RoleSimulation
     from eval_common.checkpoint_policy import CheckpointPolicy
     policy = CheckpointPolicy(ckpt, env_config=cfg)
     print(f"  {policy.describe()}")
     sim = RoleSimulation(policy.env_config)
-    sim.recorder = AllocRecorder(policy="model")
+    sim.recorder = AssignRecorder(policy="model")
     out = []
     for k, e in enumerate(eps):
         sim.random_state = np.random.RandomState(e["seed"])
@@ -262,7 +259,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=500, help="seed 0..M-1")
     ap.add_argument("--checkpoint", default=None, help="주면 실패 원인 분해 (checkpoint_XXXXXX 폴더 또는 checkpoint-XX 파일)")
     ap.add_argument("--config", nargs="*",
-                    help="체크포인트 없이 상한만 계산할 때 config yaml (기본 env.yaml + role.yaml + explore.yaml + rescue.yaml)")
+                    help="체크포인트 없이 상한만 계산할 때 config yaml (기본 env.yaml + role.yaml + task.yaml)")
     ap.add_argument("--n_agents", type=int, default=None,
                     help="UAV 수 (기본 = 체크포인트 / yaml 값). 센서 / 통신 범위는 첫 UAV 값 복제")
     args = ap.parse_args()
@@ -279,7 +276,7 @@ def main():
         from training.config_loader import load_config
         y = load_config(args.config and [os.path.join(ROOT, p) for p in args.config])
         cfg = y["env_config"]
-        print(f"env_config: {', '.join(args.config) if args.config else 'env.yaml + role.yaml + explore.yaml + rescue.yaml'}")
+        print(f"env_config: {', '.join(args.config) if args.config else 'env.yaml + role.yaml + task.yaml'}")
 
     from eval_common.checkpoint_policy import with_n_agents
     cfg = with_n_agents(cfg, args.n_agents)

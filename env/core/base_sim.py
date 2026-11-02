@@ -49,7 +49,6 @@ DEFAULT_OPTIONS = {
     "depot": None,             # 재보충 지점 = 모든 로봇의 출발 지점. 월드 좌표 (x, y) (env/core/coords.py)
                                # None -> 맵 파일의 depot -> 맵 파일의 start -> 원점 (0, 0)
     "target_golden_time": [80, 160],  # 타겟별 골든타임 tau_j. int 또는 [min, max]
-    "deadline_mode": "from_discovery",  # 'from_discovery' / 'from_start' (§9 open item 3)
     "num_targets": 10,         # 랜덤 배치 조난자 수. int 또는 [min, max] (예: [10, 20])
     "max_targets": 16,         # T: 조난자 슬롯 수 (관측 / rescue 행동 패딩 상한)
     "agents": [
@@ -127,7 +126,7 @@ class BaseSimulation:
         self.local_ch_idx = [CHANNEL_INDEX[c] for c in self.cfg["local_channels"]]
 
         self.max_targets = int(self.cfg["max_targets"])
-        self.recorder = None       # gui_evaluation.alloc_recorder.AllocRecorder (있으면 reset / tick 마다 기록)
+        self.recorder = None       # gui_evaluation.assign_recorder.AssignRecorder (있으면 reset / tick 마다 기록)
 
         self.n_agents = len(self.agents)
         ds = self.cfg["global_downsample"]
@@ -296,9 +295,8 @@ class BaseSimulation:
 
         self.targets = [Target(pos=tuple(pos), golden_time=self._sample_golden(g))
                         for (pos, g) in self._target_specs]
-        if self.cfg["deadline_mode"] == "from_start":
-            for t in self.targets:
-                t.end_time = t.golden_time
+        for t in self.targets:                     # 마감 = 에피소드 시작 기준 골든타임
+            t.end_time = t.golden_time
 
         for agent, pos in zip(self.agents, self._sample_start_positions()):
             agent.reset_state(pos)
@@ -317,10 +315,6 @@ class BaseSimulation:
     def active_target_positions(self):
         return [t.pos for t in self.targets if t.active]
 
-    def frontier_cells(self, agent_index):
-        """agent_index 의 개별 지식 기준 frontier 셀 목록 [(r, c), ...]."""
-        return [tuple(p) for p in np.argwhere(self.knowledge.frontier[agent_index])]
-
     def n_free_cells(self):
         """|C_free| — 맵 전체 free 셀 수 (탐색 비율 분모)."""
         return max(1, int(np.count_nonzero(~np.asarray(self.obstacles, dtype=bool))))
@@ -333,8 +327,6 @@ class BaseSimulation:
         for t in self.targets:
             if not t.discovered and t.active and team_free[t.pos[0], t.pos[1]]:
                 t.discovered_at = self.time
-                if self.cfg["deadline_mode"] == "from_discovery":
-                    t.end_time = self.time + t.golden_time
 
 
     def _prepare(self):
@@ -347,9 +339,6 @@ class BaseSimulation:
     def _release(self, i):
         """UAV i 의 조난자 배정 해제 (구조 완료 · 마감)."""
         a = self.agents[i]
-        ti = a.assigned_target
-        if ti is not None and self.targets[ti].assigned_to == i:
-            self.targets[ti].assigned_to = None
         a.assigned_target = None
 
     # ---------- tick 공통 부분 (발견 / 구조 / 재보충 / 마감) ----------
@@ -382,14 +371,12 @@ class BaseSimulation:
     def _process_deadlines(self):
         expired = []
         for ti, t in enumerate(self.targets):
-            # 발견 여부와 상관없이 마감이 지나면 만료. from_start 는 미발견도 end_time 이 있어 만료되고,
-            # from_discovery 의 미발견은 end_time 이 아직 없어 (발견 시점 기준이라) 만료되지 않는다.
+            # 발견 여부와 상관없이 마감이 지나면 만료
             if t.active and t.end_time is not None and self.time >= t.end_time:
                 t.expired_at = self.time
                 for i, a in enumerate(self.agents):
                     if a.assigned_target == ti:
                         self._release(i)
-                t.assigned_to = None
                 expired.append(ti)
         return expired
 
@@ -413,7 +400,7 @@ class BaseSimulation:
     # ================= critic 관측 (학습 전용) =================
 
     def centralized_state(self):
-        """CTDE critic 용 중앙집중 상태. 팀 전체 관점 5채널, 저해상도 allocentric."""
+        """CTDE critic 용 중앙집중 상태. 팀 전체 관점 5채널, 저해상도 global-frame."""
         kt = self.knowledge
         team_free = kt.team_known_free()
         team_obst = np.zeros((self.rows, self.cols), bool)

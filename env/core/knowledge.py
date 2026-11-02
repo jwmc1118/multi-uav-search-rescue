@@ -9,7 +9,7 @@
 
 local : 고해상도 S x S 크롭 — 자기 위치가 중앙, 회전 없이 월드 방위 그대로 (북쪽 = 위). critic local 입력.
         로봇에 heading 이 없고 이동도 월드 8방향이라 회전이 필요 없다.
-critic 의 중앙집중 state (BaseSimulation.centralized_state) 는 팀 지식을 _pool 로 저해상도 allocentric 으로 만든다
+critic 의 중앙집중 state (BaseSimulation.centralized_state) 는 팀 지식을 _pool 로 저해상도 global-frame 으로 만든다
 (채널별 pooling: explored 는 평균 = 블록 탐색 비율, 나머지는 max).
 
 시뮬레이션 (env/core/base_sim.py) 과 GUI 가 이 클래스 하나를 공유한다. 구조/발견/마감 '규칙'은
@@ -77,10 +77,8 @@ class KnowledgeTracker:
         self.known_obstacle = [np.zeros((self.rows, self.cols), dtype=bool) for _ in self.agents]
         self.frontier = [np.zeros((self.rows, self.cols), dtype=bool) for _ in self.agents]
         self.adjacency = np.zeros((n, n), dtype=bool)   # 직접 통신 가능
-        self.newly_sensed = [0] * n
         self.last_visible = [set() for _ in range(n)]
         self.reach = np.zeros((n, n), dtype=bool)       # n_hop 이내 연결 (지식 공유 / 이웃 context / 디코딩 그룹)
-        self.new_sets = [set() for _ in range(n)]        # 이번 step UAV 별 '팀이 처음 관측한 셀' 집합
         self.link_made = self.link_broken = 0            # 이번 step 링크 생성 / 해제 수 (쌍)
 
     # ---------- Communication ----------
@@ -172,24 +170,9 @@ class KnowledgeTracker:
             agent.local_window = self._local_crop(grid, agent)
 
     def update(self, active_target_positions=()):
-        """센싱 -> comm_range 게이팅 병합 -> 관측 텐서 갱신. 에이전트 이동 직후 매번 호출.
-        newly_sensed[i] = 이번 센싱에서 UAV i 가 직접 본 셀 중 직전까지 팀 전체가 몰랐던 셀 수 (|E^i_t|).
-        같은 새 셀을 k 대가 동시에 보면 각자 1/k 씩 -> 팀 합 = 팀이 새로 알게 된 셀 수 (중복 계산 없음)."""
-        team_known = np.zeros((self.rows, self.cols), dtype=bool)
-        for f, o in zip(self.known_free, self.known_obstacle):
-            team_known |= f | o
-        new_sets = []
-        self.last_visible = []
-        for i, agent in enumerate(self.agents):
-            visible = self._sense(agent, i)
-            self.last_visible.append(visible)
-            new_sets.append({cell for cell in visible if not team_known[cell]})
-        seen_by = {}
-        for cells in new_sets:
-            for cell in cells:
-                seen_by[cell] = seen_by.get(cell, 0) + 1
-        self.newly_sensed = [sum(1.0 / seen_by[cell] for cell in cells) for cells in new_sets]
-        self.new_sets = new_sets
+        """센싱 (last_visible = UAV 별 이번 step 직접 본 셀) -> comm_range 게이팅 병합 -> 관측 텐서 갱신.
+        에이전트 이동 직후 매번 호출."""
+        self.last_visible = [self._sense(agent, i) for i, agent in enumerate(self.agents)]
         prev = self.adjacency
         self.adjacency = self.compute_adjacency(prev)
         iu = np.triu_indices(len(self.agents), 1)

@@ -5,7 +5,7 @@
 
  [1] 구간 분할: L 자 덩어리 k=2 -> 가로 / 세로 두 연속 구간 (측지 거리), 결정성 (입력 순서 무관), medoid 는 실제 frontier 셀,
      도달 불가 frontier 제외 (A-1)
- [7] 매 step rebalance: 재분할 + 매칭 -> 같은 쪽 유지 · 크기 균형 · 연결 성분 1 개, |C| < m 이면 남는 UAV 이벤트 5
+ [7] 매 step rebalance: 재분할 + 매칭 -> 같은 쪽 유지 · 크기 균형 · 연결 성분 1 개, |C| < m 이면 남는 UAV 이벤트 "4"
  [8] 이동 목표점 동률: BFS 거리가 같으면 유클리드 거리가 짧은 셀 (오른쪽 같은 행 vs 오른쪽 위 대각선 -> 같은 행), 그다음 (행, 열)
 """
 import numpy as np
@@ -19,10 +19,15 @@ from training.config_loader import load_config
 ROWS, COLS = 30, 40
 
 
+SCENARIO_PERIOD = 10 ** 6       # 시나리오 sim 의 주기 재결정 간격 (사실상 t = 0 한 번 — 시나리오가 원인을 직접 준다)
+
+
 def blank_sim(n=3, **over):
     cfg = load_config()["env_config"]
     cfg.update(map_mode="file", map_path=None, rows=ROWS, cols=COLS, num_targets=[1, 1], target_mode="random",
                agents=[dict(cfg["agents"][0]) for _ in range(n)])
+    over = dict(over)
+    over["events"] = dict({"period": SCENARIO_PERIOD}, **(over.get("events") or {}))   # 시나리오는 재결정 원인을 직접 준다
     for k, v in over.items():                                            # 예: role={...}, events={...}
         cfg[k] = dict(cfg.get(k) or {}, **v)
     sim = RoleSimulation(cfg)
@@ -77,7 +82,7 @@ def tick(sim):
     return sim._explore_after_update(prev_state, prev_seg)
 
 
-def decide(sim, parties=(), role=None, explore=None, ev="2"):
+def decide(sim, parties=(), role=None, explore=None, ev="1"):
     """parties 에 Role 이벤트 ev 를 주고 결정. role / explore: {i: 값} (없으면 지금 역할 / 슬롯 0). 반환: (2 단계 호출 순서, info)."""
     role, explore = role or {}, explore or {}
     sim.events = [{ev} if i in parties else set() for i in range(sim.n_agents)]
@@ -85,7 +90,7 @@ def decide(sim, parties=(), role=None, explore=None, ev="2"):
     sim.mask_violation_step = 0
     calls = []
 
-    def sub(i, m):                                                      # 2 단계는 그리디 (κ Hungarian)
+    def sub(i, m):                                                      # 2 단계는 그리디 (거리 Hungarian)
         calls.append(i)
         return rule_explore_sub(sim, i, m)
     rv, sv, _, viol = sim._decide(lambda i, m: role.get(i, sim.agents[i].mode.value),   # 지정 없으면 지금 역할
@@ -163,12 +168,12 @@ def check_rebalance():
         ex = tick(sim)
     ev = sim._collect_events([a.pos for a in sim.agents], set(), ex)
     lost = [i for i in range(3) if ex.get(i) == "no segment"]
-    assert len(lost) == 1 and "5" in ev[lost[0]], (ex, ev)
+    assert len(lost) == 1 and "4" in ev[lost[0]], (ex, ev)
     set_front(sim, np.zeros((ROWS, COLS), bool))                         # 덩어리 소멸
     ex = tick(sim)
     assert all(i in ex for i in range(3) if i not in lost)
     print(f"[7] rebalance: frontier retreat x3 -> same left/middle/right order, sizes {sizes} (cv <= 0.25), 1 component each; "
-          f"|C| < m for 3 steps -> R{lost[0]} event 5; blob gone -> all event 5")
+          f"|C| < m for 3 steps -> R{lost[0]} event 4; blob gone -> all event 4")
 
 
 def check_goal_tie():

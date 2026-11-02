@@ -1,6 +1,6 @@
 """탐색/구조 시뮬레이션 GUI 실행 진입점 (UAV, 고정 고도 2D 격자).
 
-- 설정은 gui_evaluation/config/ 의 main 전용 yaml (env_main.yaml + role_main.yaml + explore_main.yaml + rescue_main.yaml,
+- 설정은 gui_evaluation/config/ 의 main 전용 yaml (env_main.yaml + role_main.yaml + task_main.yaml,
   학습과 같은 순서로 합침) 만 읽는다. 학습 (python -m training.train) 은 *_main 이 아닌 원본 yaml 을 읽는다.
   GUI / 체크포인트 같은 main 전용 값은 env_main.yaml 의 main: 섹션.
 - 결정 (계층 구조: Role 선택 -> Rescue / Explore 할당 / Return -> BFS 경로 추종, env/role/simulation.py) 은 기본적으로
@@ -36,11 +36,11 @@ def print_settings(cfg, env, main_cfg):
     print(f"[main] UAV {len(agents)} 대 {agents[:1]}{' ...' if len(agents) > 1 else ''}, n_hop {env.get('n_hop')}, "
           f"capacity {env.get('capacity')}")
     print(f"[main] map: {map_desc}, depot {env.get('depot')}, targets {env.get('num_targets')} "
-          f"(golden {env.get('target_golden_time')}, {env.get('deadline_mode')}), max_episode_len {env.get('max_episode_len')}")
+          f"(golden {env.get('target_golden_time')}), max_episode_len {env.get('max_episode_len')}")
     print(f"[main] cluster: eps {cl.get('eps')}, min_samples {cl.get('min_samples')}, k_max {cl.get('k_max')}")
     print(f"[main] events: {env.get('events')}")
     print(reward_settings_line(cfg, "main"))
-    print(f"[main] policy_mode: {env.get('policy_mode')}, explore 2 단계: κ Hungarian")
+    print(f"[main] policy_mode: {env.get('policy_mode')}, explore 2 단계: 거리 Hungarian")
     print(f"[main] checkpoint: {main_cfg.get('checkpoint') or 'None (rules)'}  (model_mode {main_cfg.get('model_mode')})")
 
 

@@ -1,15 +1,15 @@
-"""합류 재배정 (이번 step 누군가 고른 덩어리는 기존 배정자도 2 단계 구간을 다시 받음) 점검 — 2 단계는 항상 κ Hungarian.
+"""합류 재배정 (이번 step 누군가 고른 덩어리는 기존 배정자도 2 단계 구간을 다시 받음) 점검 — 2 단계는 항상 거리 합 최소 Hungarian.
 
     python -m tests.role.test_join_reselect
 
  [1] 합류: A (왼쪽 끝) + A2 (오른쪽 끝) 가 덩어리 C 탐색 중, B 가 C 를 고름 -> A, B, A2 전원이 Hungarian 으로 1:1 구간 배정,
      explore 결정 (학습 sample) 은 B 의 1 단계 하나 (기존 배정자의 재배정은 결정 아님)
- [2] 합류 덩어리 κ 헝가리안 (기존 배정자 goal 구간 d = 0) -> A / A2 가 자기 goal 쪽 구간, goal 그대로, κ 품질 (exp(-κ)) 큰 하락 없음
+ [2] 합류 덩어리 거리 헝가리안 -> A / A2 가 자기 goal 쪽 구간, goal 그대로, 자기 구간까지 BFS 거리가 크게 늘지 않음
  [3] 합류가 없는 덩어리의 기존 배정자: 결정 없음, 매칭으로 goal 구간 유지
  [4] m 감소 (배정자가 떠남): 정책 호출 없이 매 step rebalance 매칭으로 처리, 남은 배정자 goal 유지
  [5] 참여자 2 명 · 구간 2 개: 두 번째 차례는 후보 1 개 -> Hungarian 호출 없이 남은 구간
- [6] 학습 정책 rollout: explore 결정 = 1 단계뿐 (explore_valid == explore_valid_s1), 합류 재배정된 기존 배정자는 결정 · 학습
-     sample 이 아니고 (explore_valid 0) explore 옵션이 계속된다 (explore_active 1)
+ [6] 학습 정책 rollout: explore 결정 = 1 단계뿐 (explore_valid = explore_valid_s1 - 같은 덩어리 재선택 explore_keep),
+     합류 재배정된 기존 배정자는 결정 · 학습 sample 이 아니고 (explore_valid 0) explore 옵션이 계속된다 (explore_active 1)
 """
 import numpy as np
 
@@ -22,9 +22,10 @@ E = Mode.EXPLORE.value
 
 
 def kf(sim, l):
-    """그리디 κ 비용 품질 exp(-κ) (κ = (d + 1) / (|S_eff| + 1), 구간 없으면 0) — 보상 아님, 분할 품질 확인용."""
-    k = sim.kappa_cells(l, sim.agents[l].cluster) if sim.agents[l].cluster else None
-    return float(np.exp(-k[0])) if k is not None else 0.0
+    """자기 구간까지 BFS 최소 거리 (policies/role_rules.py seg_distance, 구간 없으면 inf) — 분할 품질 확인용."""
+    from policies.role_rules import seg_distance
+    d = seg_distance(sim, l, sim.agents[l].cluster) if sim.agents[l].cluster else None
+    return float("inf") if d is None else float(d)
 
 
 class SubRec(Recorder):
@@ -55,7 +56,7 @@ HUNGARIAN = lambda s, i, m: RuleDecider().explore_sub(s, i, m)
 
 
 def decide_join(sim, sub=HUNGARIAN):
-    sim.events = [set(), {"4"}, set()]
+    sim.events = [set(), {"3"}, set()]
     sim._set_decide_order()
     f0 = {l: kf(sim, l) for l in (0, 2)}
     goal0 = {l: sim.agents[l].goal for l in (0, 2)}
@@ -87,11 +88,10 @@ def check_rule_join():
         a = sim.agents[l]
         assert a.goal == goal0[l] and tuple(goal0[l]) in a.cluster, (l, goal0[l], a.goal)
     f1 = {l: kf(sim, l) for l in (0, 2)}
-    drop = {l: f0[l] - f1[l] for l in (0, 2)}
-    assert all(d < 0.15 for d in drop.values()), (f0, f1)
+    assert all(f1[l] <= f0[l] + 2 for l in (0, 2)), (f0, f1)            # 자기 구간까지 거리가 크게 늘지 않음
     assert sim.ev_stats["reselect_kept_goal"] == 2 and sim.ev_stats["reselect_goal_change"] == 0
-    print(f"[2] join (κ Hungarian, own-goal segment d = 0): A / A2 keep their goal side, goals unchanged; "
-          f"exp(-κ) A {f0[0]:.3f}->{f1[0]:.3f}, A2 {f0[2]:.3f}->{f1[2]:.3f}; B gets the middle")
+    print(f"[2] join (distance Hungarian): A / A2 keep their goal side, goals unchanged; distance to own segment "
+          f"A {f0[0]:.0f}->{f1[0]:.0f}, A2 {f0[2]:.0f}->{f1[2]:.0f}; B gets the middle")
 
 
 def check_no_join_keeper():
@@ -103,7 +103,7 @@ def check_no_join_keeper():
     a.blob = next(b.id for b in sim.clusters_of(0) if (15, 5) in b.cell_set())
     tick(sim)
     g0, seg0 = a.goal, a.cluster
-    sim.events = [set(), {"1"}]
+    sim.events = [set(), {"periodic"}]
     sim._set_decide_order()
     slot = next(k for k, b in enumerate(sim.clusters_of(1)) if (24, 30) in b.cell_set())
     rec = SubRec(sim, role={1: E}, explore={1: slot})
@@ -141,7 +141,7 @@ def check_single_candidate():
     sim.agents[0].mode = Mode.RETURN
     sim.agents[1].blob = sim.clusters_of(1)[0].id
     tick(sim)
-    sim.events = [{"4"}, set()]
+    sim.events = [{"3"}, set()]
     sim._set_decide_order()
     rec = SubRec(sim, sub=HUNGARIAN, role={0: E})
     sv = rec.run()
@@ -157,8 +157,8 @@ def check_model():
     from tests.role.smoke_role_policy import base_config, make
     from training.catalog import register_all
     register_all()
-    env, prep, policy = make(base_config(mode=("learned", "learned", "learned")))
-    n_re = n_s1 = 0
+    env, prep, policy = make(base_config(mode=("learned", "learned")))
+    n_re = n_s1 = n_keep = 0
     for seed in range(6):
         env.seed(seed)
         obs = env.reset()
@@ -166,8 +166,10 @@ def check_model():
             actions, _, _ = policy.compute_actions(prep.transform(obs)[None], explore=True)
             act = {k: [int(np.asarray(a)[0]) for a in v] for k, v in actions.items()}
             obs, _, done, info = env.step(act)
-            assert info["explore_valid"] == info["explore_valid_s1"], info["explore_valid"]
+            want = [s1 - k for s1, k in zip(info["explore_valid_s1"], info["explore_keep"])]
+            assert info["explore_valid"] == want, (info["explore_valid"], info["explore_valid_s1"], info["explore_keep"])
             n_s1 += int(sum(info["explore_valid_s1"]))
+            n_keep += int(sum(info["explore_keep"]))
             for i, r in enumerate(info["explore_reselect"]):
                 if r > 0:
                     n_re += 1
@@ -175,7 +177,8 @@ def check_model():
             if done:
                 break
     assert n_re > 0 and n_s1 > 0, (n_re, n_s1)
-    print(f"[6] learned rollouts: explore decisions = stage 1 only ({n_s1}); {n_re} join re-assignments are not decisions "
+    print(f"[6] learned rollouts: explore decisions = stage 1 only ({n_s1}, of which {n_keep} same-blob keeps are not samples); "
+          f"{n_re} join re-assignments are not decisions "
           f"(explore_valid 0) and keep the explore option (explore_active 1)")
 
 

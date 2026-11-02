@@ -1,0 +1,34 @@
+# main_scale.py 평가 env 조건 — 시뮬레이션 실행에 쓰는 env_config 만 (실행 설정은 scale_evaluation/config/scale.yaml).
+# env_scale.yaml -> role_scale.yaml -> task_scale.yaml 순으로 합침. 값은 training/config 와 같게 유지 (tests/role/test_config.py).
+# 학습 전용 (PPO · 병렬 수집 · 네트워크 · 보상) 과 GUI 설정은 뺌 — 보상은 평가 지표 · 행동에 영향 없음
+env_config:
+  policy_mode: {task: rule}     # task head: learned = 학습 / rule = 규칙 (RESCUE: 주기 · 이벤트 "1" 담당 후보 / "2" "3" "4" EDF,
+                                #   EXPLORE: 1 단계 점수 차례 + 2 단계 거리 Hungarian — policies/role_rules.py)
+                                # ablation: (role, task) = (rule, rule) / (learned, rule) / (learned, learned)
+
+  # ---- frontier 할당 (explore): 덩어리 (DBSCAN) -> 1 단계 덩어리 선택 (점수 차례) -> 같은 덩어리 m 대면 구간 분할 · 2 단계 배정 ----
+  #   2 단계 (같은 덩어리 안 구간 배정) 는 거리 합 최소 1:1 Hungarian (학습 없음): 비용 = UAV 에서 구간 셀까지 BFS 최소 거리
+  #     (기존 goal 우대 없음, 도달 불가 1e6)
+  #   덩어리 쪼개짐 / 합쳐짐: 재결정 없이 소속만 이어 붙임 (쪼개짐 = 내 구간이 가장 많이 남은 조각, 합쳐짐 = 새 덩어리)
+  #   이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정 (기존 배정자의 explore
+  #     옵션은 계속). 아무도 새로 고르지 않은 덩어리의 기존 배정자는 그대로
+
+  # ---- 덩어리 (frontier DBSCAN, env/role/clusters.py) ----
+  cluster:
+    eps: 1.5                    # DBSCAN 이웃 반경 (유클리드). 1.5 = 8-연결
+    min_samples: 2               # core 셀 조건: 자기 포함 이웃 frontier 수 (미만이고 core 이웃도 아니면 noise 로 버림)
+    k_max: 10                   # F 노드 (덩어리) 슬롯 수 (크기 내림차순 상위)
+
+  # ---- 1 단계 점수 · 2 단계 (env/role/explore.py): 덩어리 선택 -> 같은 덩어리 m 대면 측지 k-medoids 로 구간 분할 -> 구간 배정 ----
+  explore:
+    n_sub_max: 5                # 2 단계 구간 슬롯 수 = 한 덩어리를 나누는 구간 수 상한 (넘는 담당자는 구간 공유). 기본 = UAV 수
+    size_ref: 100               # 덩어리 / 구간 크기 특징 정규화: min(1, log(1+|C|) / log(1+size_ref)). GNN F 노드 · critic 공통
+    match_dilate: 1             # step 간 덩어리 대응: 이전 덩어리 셀을 이 칸만큼 넓혀 겹침 판정 (frontier 1 칸 후퇴 흡수)
+    track_margin: 2             # 소속 덩어리가 사라졌을 때 직전 구간 셀에서 (센서 범위 + 이 값) 이내의 새 덩어리로 이어 붙임
+    kmedoids_iters: 10          # 구간 분할 k-medoids 반복 상한
+                                # 매 step 구간 rebalance (정책 호출 없음): 담당자 m >= 2 인 덩어리를 현재 frontier 전체로
+                                #   k = min(m, |C|) k-medoids 재분할 (각자의 goal 셀 근처로 warm start), 매칭 비용 = goal 이 든
+                                #   구간 0 / 아니면 위치에서 구간까지 BFS. 이동 목표점 = 내 구간 frontier 중 BFS 가장 가까운 셀
+    order_dist_alpha: 2.0       # 1 단계 차례 (policies/decision_order.py explore_front, env · 그리디 · 학습 모델 공통):
+                                #   남은 UAV j x 닿는 덩어리 m 의 모든 쌍 중 점수 (N_m / (n_m + 1)) / (d_jm + 1)^α 최대 쌍이 다음 차례
+                                #   (N = 덩어리 크기, n = 배정 수, d = BFS 칸 수, 한 대마다 n 갱신). 모델 config 로 자동 복사

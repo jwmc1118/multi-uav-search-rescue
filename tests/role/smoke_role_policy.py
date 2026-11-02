@@ -2,11 +2,12 @@
 
     python -m tests.role.smoke_role_policy
 
-1) policy_mode 4 조합 x (rollout -> 헤드별 GAE -> learn_on_batch 2 회): NaN 없음, 헤드별 stats 키, rule 헤드는 마스크 0
-2) 학습 재생: SampleBatch.ACTIONS 로 순차 디코딩을 재생한 logits = rollout logits (결정한 헤드 / 에이전트에서)
-   + 모델이 계산한 explore 1 단계 결정 (s1) = env 가 실제로 한 결정 (explore_valid_s1), 마스크 위반 0
+1) policy_mode (role, task) 3 조합 x (rollout -> 표본 종류별 GAE -> learn_on_batch 2 회): NaN 없음, head / 표본 종류별
+   stats 키, rule head 는 마스크 0
+2) 학습 재생: SampleBatch.ACTIONS 로 순차 디코딩을 재생한 logits = rollout logits (결정한 head / 에이전트에서)
+   + 모델이 계산한 explore 1 단계 결정 (s1) · RESCUE 할당 = env 가 실제로 한 결정 (explore_valid_s1 / rescue 결정), 마스크 위반 0
 3) 모델 파라미터가 N 과 무관 (N=4 / N=5 state_dict shape 동일), N=4 가중치를 N=5 모델에 실어 한 에피소드 실행
-4) 헤드별 파라미터 수
+4) 네트워크별 파라미터 수
 """
 import copy
 
@@ -22,12 +23,14 @@ from training.role.ppo import RolePPOTorchPolicy
 from training.config_loader import load_config
 
 STEPS = 120
-COMBOS = [("rule", "rule", "rule"), ("learned", "rule", "rule"), ("learned", "learned", "rule"),
-          ("learned", "learned", "learned")]
-HEAD_KEYS = [f"{s}_{h}" for h in ("role", "rescue", "explore")
-             for s in ("vf_explained_var", "policy_loss", "vf_loss", "entropy", "kl", "n_decisions",
-                       "value_target_mean", "value_target_std", "value_norm_mean")]
-ACT_ORDER = ("explore", "rescue", "role")
+COMBOS = [("rule", "rule"), ("learned", "rule"), ("learned", "learned")]         # (role, task)
+KINDS = ("role", "rescue", "explore")                                             # 표본 종류 (= value head)
+STAT = {"role": "role", "rescue": "task_rescue", "explore": "task_explore"}
+HEAD_KEYS = [f"{s}_{STAT[h]}" for h in KINDS
+             for s in ("vf_explained_var", "vf_loss", "entropy", "n_decisions", "value_target_mean", "value_target_std",
+                       "value_norm_mean")] + \
+            [f"{s}_{h}" for h in ("role", "task") for s in ("policy_loss", "kl", "approx_kl", "clip_frac")]
+ACT_ORDER = ("role", "task")
 
 
 def base_config(n_agents=None, mode=None):
@@ -42,7 +45,7 @@ def base_config(n_agents=None, mode=None):
     if n_agents:
         cfg["env_config"]["agents"] = [dict(cfg["env_config"]["agents"][0]) for _ in range(n_agents)]
     if mode:
-        cfg["env_config"]["policy_mode"] = dict(zip(("role", "rescue", "explore"), mode))
+        cfg["env_config"]["policy_mode"] = dict(zip(("role", "task"), mode))
     return cfg
 
 
@@ -57,20 +60,23 @@ def collect(env, prep, policy, seed=0):
     obs = env.reset()
     rows = {k: [] for k in ("obs", "new_obs", "actions", "rewards", "dones", "infos", "logits")}
     extras = []
-    mism = {"s1": 0, "steps": 0, "s1_n": 0}
-    N = env.n_agents
+    mism = {"s1": 0, "steps": 0, "s1_n": 0, "res": 0, "res_n": 0}
     for t in range(STEPS):
         ob = prep.transform(obs)
         actions, _, extra = policy.compute_actions(ob[None], explore=True)
         act = {k: [int(np.asarray(a)[0]) for a in v] for k, v in actions.items()}
         st = policy.model.last_out["stage"]
         s1_m = st["s1"][0].cpu().numpy()
+        res_m = st["rescue"][0].cpu().numpy()
         nobs, r, done, info = env.step(act)
         mode = env.sim.policy_mode
         if mode["role"] == "learned" and mode["explore"] == "learned":   # 모델 = env 결정 경로가 같아야 하는 조합
             mism["steps"] += 1
             mism["s1"] += int(np.any(s1_m != (np.asarray(info["explore_valid_s1"]) > 0)))
             mism["s1_n"] += int(np.sum(info["explore_valid_s1"]))
+            env_res = (np.asarray(info["role_valid"]) > 0) & (np.asarray(info["role"]) == 1)   # env: 이번 step RESCUE 결정
+            mism["res"] += int(np.any(res_m != env_res))
+            mism["res_n"] += int(np.sum(env_res))
             assert info["mask_violations"] == 0, (t, info["mask_violations"])
         rows["obs"].append(ob); rows["new_obs"].append(prep.transform(nobs))
         rows["actions"].append(np.concatenate([np.asarray(act[k], np.float32) for k in ACT_ORDER]))
@@ -98,11 +104,12 @@ def check_replay(policy, batch):
         lg, _ = m.from_batch(t, is_training=True)
     lg = lg.cpu().numpy()
     prev = np.asarray(batch[SampleBatch.ACTION_DIST_INPUTS])
-    o = [0, N * K, N * K + N * T, N * K + N * T + N * 3]
-    seg = {"explore": (o[0], o[1], K), "rescue": (o[1], o[2], T), "role": (o[2], o[3], 3)}
+    o = [0, N * 3, N * 3 + N * (T + K)]
+    seg = {"role": (o[0], o[1], 3), "task": (o[1], o[2], T + K)}
     worst = 0.0
     for h, (a, b, w) in seg.items():
-        mask = np.asarray(batch[f"{h}_train_mask"]) > 0
+        mask = (np.asarray(batch["role_train_mask"]) > 0) if h == "role" else \
+            (np.asarray(batch["rescue_train_mask"]) > 0) | (np.asarray(batch["explore_train_mask"]) > 0)
         x, y = lg[:, a:b].reshape(-1, N, w), prev[:, a:b].reshape(-1, N, w)
         if mask.any():
             worst = max(worst, float(np.abs(x[mask] - y[mask]).max()))
@@ -115,12 +122,13 @@ def check_combos():
         torch.manual_seed(0)
         env, prep, policy = make(base_config(mode=mode))
         batch = collect(env, prep, policy)
-        for h in ("role", "rescue", "explore"):
+        for h in KINDS:
             for k in (f"advantages_{h}" if h != "role" else "advantages", f"{h}_train_mask"):
                 assert np.isfinite(batch[k]).all(), (mode, k)
-        dec = {h: int(np.sum(batch[f"{h}_train_mask"])) for h in ("role", "rescue", "explore")}
-        for h, m in zip(("role", "rescue", "explore"), mode):
-            if m == "rule":
+        dec = {h: int(np.sum(batch[f"{h}_train_mask"])) for h in KINDS}
+        pm = dict(zip(("role", "task"), mode))
+        for h in KINDS:
+            if pm["role" if h == "role" else "task"] == "rule":
                 assert dec[h] == 0 and np.sum(batch[f"{h}_value_mask"]) == 0, (mode, h)
         err = check_replay(policy, batch)
         for _ in range(2):
@@ -132,11 +140,13 @@ def check_combos():
         assert not bad, (mode, bad)
         mm = collect.mismatch
         if mm["steps"]:
-            assert mm["s1"] == 0, f"모델 / env explore 1 단계 불일치 {mm}"
-        print(f"    explore stage check: steps {mm['steps']}, s1 {mm['s1_n']} decisions, mismatched steps s1 {mm['s1']}")
-        print(f"[1] {mode}: decisions {dec}  total_loss {float(ls['total_loss']):.4f}  "
-              f"ev role/res/exp {float(ls['vf_explained_var_role']):+.2f}/{float(ls['vf_explained_var_rescue']):+.2f}/"
-              f"{float(ls['vf_explained_var_explore']):+.2f}  replay max|Δlogit| {err:.1e}")
+            assert mm["s1"] == 0 and mm["res"] == 0, f"모델 / env 결정 불일치 {mm}"
+        print(f"    model vs env decisions: steps {mm['steps']}, explore s1 {mm['s1_n']} / RESCUE {mm['res_n']} decisions, "
+              f"mismatched steps s1 {mm['s1']} / rescue {mm['res']}")
+        print(f"[1] (role, task) {mode}: decisions {dec}  total_loss {float(ls['total_loss']):.4f}  "
+              f"ev role/task-res/task-exp {float(ls['vf_explained_var_role']):+.2f}/"
+              f"{float(ls['vf_explained_var_task_rescue']):+.2f}/{float(ls['vf_explained_var_task_explore']):+.2f}  "
+              f"replay max|Δlogit| {err:.1e}")
 
 
 def check_n_invariance():
@@ -156,7 +166,7 @@ def check_n_invariance():
     print(f"[3] N-invariant ({len(s4)} tensors); N=4 weights -> N=5 model: episode done t={steps}, "
           f"rescued {info['rescued_total']}/{len(env5.sim.targets)}, mask violations {env5.sim.mask_violation_total}")
     groups = p4.model.net.module_groups()
-    print("[4] params: " + ", ".join(f"{k} {sum(p.numel() for m in ms for p in m.parameters()):,}" for k, ms in groups.items()))
+    print("[4] params (network): " + ", ".join(f"{k} {sum(p.numel() for m in ms for p in m.parameters()):,}" for k, ms in groups.items()))
 
 
 if __name__ == "__main__":

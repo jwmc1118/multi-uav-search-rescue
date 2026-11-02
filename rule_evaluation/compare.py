@@ -1,27 +1,26 @@
 """규칙 정책 vs 학습 모델 비교 로직 (main_rule.py) — 같은 seed 몬테카를로.
 
-    run_parallel(cfg, seeds, workers)   seed 단위 병렬 실행 (eval_common/parallel.py, 경량 체크포인트 정책) -> per / ts 행,
-                               실제 env_config, 강제된 키, 체크포인트 경로. 같은 seed 의 초기 상태 지문이 다르면 AssertionError
-    build_policies(cfg)        (순차 · ray 경로) 체크포인트 env_config -> yaml env.files -> env.overrides 로 병합한 설정으로 CheckpointPolicy
-                               (env_priority=False: SHAPE_KEYS 는 체크포인트 값) 와 RulePolicy, 둘이 같이 쓸 RoleSimulation
-    run(sim, policies, seeds)  정책마다 seed 목록 실행 -> per_episode / timeseries 행. 같은 seed 의 초기 상태 지문이 다르면 AssertionError
-    summarize(...)             지표별 정책 평균 ± 표준편차 · 95% bootstrap CI, 짝 차이 (모델 - 규칙) 평균 · CI, 승 / 무 / 패, Wilcoxon p
-                               (+ 도달 가능한 최소 p · n 부족 표시, 전부 같은 쪽 (unanimous), 효과 크기 d_z · CI)
+    run_parallel(cfg, seeds, workers, run)   seed 단위 병렬 실행 (eval_common/parallel.py, 경량 체크포인트 정책) -> per / ts 행,
+                               실제 env_config, 강제된 키, 체크포인트 경로. 같은 seed 의 초기 상태 지문이 다르면 AssertionError.
+                               run = both (규칙 + 모델) / rule (규칙만, 체크포인트 없이) / learned (모델만)
+    eval_env_config(files)     평가 env = files (기본 rule_evaluation/config 의 env_rule → role_rule → task_rule.yaml) 를 합친 env_config
+    summarize(...)             지표별 정책 평균 ± 표준편차 · 95% bootstrap CI. 두 정책이 다 있으면 짝 차이 (모델 - 규칙) 평균 · CI,
+                               승 / 무 / 패, Wilcoxon p (+ 도달 가능한 최소 p · n 부족 표시, unanimous, 효과 크기 d_z · CI)
     timeseries_stats(...)      step 별 평균 · CI (누적 지표는 에피소드가 끝난 뒤 마지막 값 유지, 역할 비율은 끝난 뒤 제외)
-    convergence(...)           앞 k 개 에피소드의 구조율 짝 차이 평균 · CI (k = 1..n)
+    convergence(...)           앞 k 개 에피소드의 구조율 짝 차이 평균 · CI (k = 1..n, 두 정책이 다 있을 때만)
+평가 env (policy_mode 포함) 는 --run 과 무관하게 항상 eval_env_config. 체크포인트는 가중치와 관측 shape 키 (SHAPE_KEYS +
+cluster.k_max, eval_common/checkpoint_policy.py runtime_env_config) 에만 쓰고, 그 키가 다르면 체크포인트 값으로 고정 (경고).
 """
-import copy
 import os
 
 import numpy as np
-import yaml
 
-from eval_common.episode import RulePolicy, run_episode_detailed
 from eval_common.stats import bootstrap_ci, mean_std, paired
-from training.config_loader import merge
+from training.config_loader import RULE_FILES, load_config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICIES = ("rule", "model")
+RUN_POLICIES = {"both": ("rule", "model"), "rule": ("rule",), "learned": ("model",)}   # main_rule --run
 CUMULATIVE = ("cum_rescue_rate", "cum_discover_rate", "explored")
 ROLES = ("role_explore", "role_rescue", "role_return")
 
@@ -30,42 +29,30 @@ def _abs(p):
     return p if os.path.isabs(p) else os.path.join(ROOT, p)
 
 
-def merged_env_config(train_env, env_cfg):
-    """체크포인트 env_config -> env.files (각 파일의 env_config) -> env.overrides (dict 는 key 단위 깊은 병합)."""
-    out = copy.deepcopy(train_env)
-    for f in env_cfg.get("files") or []:
-        with open(_abs(f)) as fh:
-            out = merge(out, (yaml.safe_load(fh) or {}).get("env_config") or {})
-    return merge(out, env_cfg.get("overrides") or {})
+def eval_env_config(files=RULE_FILES):
+    """평가 env_config = files (env → role → task 순) 를 training/config_loader.load_config 로 합친 값."""
+    return load_config(files)["env_config"]
 
 
-def build_policies(cfg, env_config=None, quiet=False, free_keys=()):
-    """반환 (sim, {'rule': RulePolicy, 'model': CheckpointPolicy}, checkpoint 경로, 실제 env_config, 경고 목록).
-    free_keys: 체크포인트 값으로 고정하지 않을 SHAPE_KEYS (main_scale)."""
-    from env.role.simulation import RoleSimulation
-    from eval_common.checkpoint_policy import CheckpointPolicy, load_train_config, resolve_checkpoint
-    ckpt = resolve_checkpoint(_abs(cfg["checkpoint"]))
-    train_env = load_train_config(ckpt).get("env_config", {})
-    env = env_config if env_config is not None else merged_env_config(train_env, cfg.get("env") or {})
-    env = dict(env, events=dict(env.get("events") or {}, log_dir=None))
-    model = CheckpointPolicy(ckpt, env_config=env, mode=cfg.get("mode", "greedy"), env_priority=False,
-                             free_keys=free_keys)
-    model.name = "model"
-    sim = RoleSimulation(model.env_config)
-    return sim, {"rule": RulePolicy(), "model": model}, ckpt, model.env_config, list(model.warnings)
+def present(per):
+    """per_episode 에 있는 정책 (POLICIES 순)."""
+    have = {r["policy"] for r in per}
+    return tuple(p for p in POLICIES if p in have)
 
 
-def run_parallel(cfg, seeds, workers, env_config=None, free_keys=(), timeseries=True, label="rule"):
-    """반환 (per_episode, timeseries, 실제 env_config, 강제된 키 목록, 체크포인트 경로). 결과는 seed 순 (workers 수와 무관)."""
+def run_parallel(cfg, seeds, workers, run="both", env_config=None, free_keys=(), timeseries=True, label="rule"):
+    """반환 (per_episode, timeseries, 실제 env_config, 강제된 키 목록, 체크포인트 경로 (run rule 이면 None)).
+    결과는 seed 순 (workers 수와 무관)."""
     from eval_common.checkpoint_policy import load_train_config, resolve_checkpoint, runtime_env_config
     from eval_common.parallel import Task, run_tasks
-    ckpt = resolve_checkpoint(_abs(cfg["checkpoint"]))
-    train_env = load_train_config(ckpt).get("env_config", {})
-    env = env_config if env_config is not None else merged_env_config(train_env, cfg.get("env") or {})
+    policies = RUN_POLICIES[run]
+    ckpt = resolve_checkpoint(_abs(cfg["checkpoint"])) if "model" in policies else None   # 규칙만: 체크포인트 없이
+    train_env = load_train_config(ckpt).get("env_config", {}) if ckpt else {}
+    env = env_config if env_config is not None else eval_env_config()
     env = dict(env, events=dict(env.get("events") or {}, log_dir=None))
-    used, warnings = runtime_env_config(train_env, env, free_keys)
-    res = run_tasks(ckpt, cfg.get("mode", "greedy"), [Task(None, env, tuple(free_keys), s, timeseries) for s in seeds],
-                    workers, label)
+    used, warnings = runtime_env_config(train_env, env, free_keys) if ckpt else (env, [])
+    res = run_tasks(ckpt, cfg.get("mode", "greedy"),
+                    [Task(None, env, tuple(free_keys), s, timeseries, policies) for s in seeds], workers, label)
     per = [r for x in res for r in x.per]
     per.sort(key=lambda r: (POLICIES.index(r["policy"]), r["seed"]))
     ts = [r for x in res for r in x.ts]
@@ -74,34 +61,23 @@ def run_parallel(cfg, seeds, workers, env_config=None, free_keys=(), timeseries=
     return per, ts, used, warnings, ckpt
 
 
-def run(sim, policies, seeds, label="", timeseries=True):
-    """반환 (per_episode [dict], timeseries [dict]). 정책마다 같은 seed 순서로, seed 별 초기 상태 지문 일치 확인."""
-    per, ts, sigs = [], [], {}
-    for name, pol in policies.items():
-        for k, s in enumerate(seeds):
-            m, rows, sig = run_episode_detailed(sim, pol, s, timeseries=timeseries)
-            if s in sigs:
-                assert sigs[s] == sig, f"seed {s}: 정책 {name} 의 초기 상태가 다른 정책과 다름 (맵 / 조난자 / 골든타임)"
-            sigs[s] = sig
-            per.append(dict(policy=name, seed=s, **m))
-            ts += [dict(policy=name, seed=s, **r) for r in rows]
-            print(f"\r  {label}[{name}] {k + 1}/{len(seeds)}", end="", flush=True)
-        print()
-    return per, ts
-
-
 def summarize(per, metrics, lower_is_better, boot):
-    """지표별 요약 행: 정책별 mean / std / ci_lo / ci_hi, 짝 차이 (model - rule) diff / ci, win / tie / loss (모델 기준), p."""
-    by = {p: {r["seed"]: r for r in per if r["policy"] == p} for p in POLICIES}
-    seeds = sorted(set(by["rule"]) & set(by["model"]))
+    """지표별 요약 행: 정책별 mean / std / ci_lo / ci_hi. 두 정책이 다 있으면 짝 차이 (model - rule) diff / ci,
+    win / tie / loss (모델 기준), p 등."""
+    pols = present(per)
+    by = {p: {r["seed"]: r for r in per if r["policy"] == p} for p in pols}
+    seeds = sorted(set.intersection(*[set(by[p]) for p in pols]))
     rows = []
     for m in metrics:
         row = {"metric": m, "higher_is_better": m not in lower_is_better, "n": len(seeds)}
-        for p in POLICIES:
+        for p in pols:
             x = np.array([by[p][s][m] for s in seeds], float)
             mu, sd = mean_std(x)
             lo, hi = bootstrap_ci(x, boot["n"], boot["alpha"], boot["seed"])
             row.update({f"{p}_mean": mu, f"{p}_std": sd, f"{p}_ci_lo": lo, f"{p}_ci_hi": hi})
+        if len(pols) < 2:
+            rows.append(row)
+            continue
         pr = paired([by["rule"][s][m] for s in seeds], [by["model"][s][m] for s in seeds], boot["n"], boot["alpha"],
                     boot["seed"], higher_better=m not in lower_is_better)
         row.update({"diff_mean": pr["diff_mean"], "diff_ci_lo": pr["diff_lo"], "diff_ci_hi": pr["diff_hi"],
@@ -116,7 +92,7 @@ def timeseries_stats(ts, boot, max_step=None):
     """step 별 정책 평균 · CI. 반환 [dict(policy, step, <지표>_mean / _lo / _hi)]."""
     out = []
     T = max_step or max(r["step"] for r in ts)                     # 두 정책 공통 시간 축
-    for p in POLICIES:
+    for p in present(ts):
         rows = [r for r in ts if r["policy"] == p]
         seeds = sorted({r["seed"] for r in rows})
         keys = CUMULATIVE + ROLES
@@ -144,7 +120,9 @@ def timeseries_stats(ts, boot, max_step=None):
 
 
 def convergence(per, boot, metric="rescue_rate"):
-    """앞 k 개 seed (seed 순서) 의 짝 차이 (model - rule) 평균 · CI, k = 1..n."""
+    """앞 k 개 seed (seed 순서) 의 짝 차이 (model - rule) 평균 · CI, k = 1..n. 한 정책만 있으면 []."""
+    if len(present(per)) < 2:
+        return []
     by = {p: {r["seed"]: r[metric] for r in per if r["policy"] == p} for p in POLICIES}
     seeds = sorted(set(by["rule"]) & set(by["model"]))
     d = np.array([by["model"][s] - by["rule"][s] for s in seeds], float)

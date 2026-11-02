@@ -1,5 +1,6 @@
-"""계층 구조 env 관측 명세 출력 — 관측 키 / shape, 행동 공간, 그리고 세 네트워크 (역할 선택 / 생존자 할당 / frontier 할당)
-가 보는 이종 그래프 (노드 U / S / K, 간선 U–U / U–S / U–K / S–S / K–K) 특징의 이름 · 값 범위 (사양 env/role/graph_obs.py).
+"""계층 구조 env 관측 명세 출력 — 관측 키 / shape, 행동 공간, 그리고 두 네트워크 (역할 선택 / task (하위 할당)) 가 보는 이종 그래프
+(노드 U / S / F, 간선 U–U / U–S / U–F / S–S / F–F / S–F, 그룹 context) 특징의 이름 · 값 범위 (사양 env/role/graph_obs.py).
+결정 그래프 종류: role = 역할 선택, rescue = task (하위 할당) (RESCUE), s1 = task (하위 할당) (EXPLORE 1 단계).
 
     python -m tests.role.print_obs_spec [seed] [steps]
 
@@ -12,9 +13,9 @@ import numpy as np
 import torch
 from ray.rllib.models import ModelCatalog
 
-from env.role.graph_obs import EDGE_FEATURES, K_FEATURES, S_FEATURES, U_FEATURES
+from env.role.graph_obs import CONTEXT_FEATURES, EDGE_FEATURES, F_FEATURES, S_FEATURES, U_FEATURES
 from env.role.gym_env import RoleEnv
-from env.role.simulation import ROLE_G_EXP_FEATURES, ROLE_G_RES_FEATURES, ROLE_GROUP_FEATURES, ROLE_SELF_FEATURES
+from env.role.simulation import ROLE_GROUP_FEATURES, ROLE_SELF_FEATURES
 from models.role.rllib_model import RoleModel
 from policies.role_rules import RuleDecider
 from training.catalog import register_all
@@ -39,8 +40,9 @@ def collect(env, model, prep, steps):
                 add(f"{st}:{t}", g["x"][t][g["mask"][t]])
             for k in g["edge"]:
                 add(f"{st}:{k}", g["edge"][k][g["adj"][k]])
+            add(f"{st}:ctx", g["ctx"])
         for i, ob in enumerate(obs["agents"]):
-            for k in ("role_self", "role_group", "role_g_res", "role_g_exp"):
+            for k in ("role_self", "role_group"):
                 acc.setdefault(k, []).append(ob[k][None])
         done, _ = sim.step(RuleDecider())
         if done:
@@ -74,8 +76,8 @@ def main(seed=0, steps=120):
     ag = env.observation_space["agents"][0].spaces
     print(f"정규화: 좌표 (x / W, y / H), 거리 BFS / d_max (d_max = {sim.d_max:.0f}), U–U 거리 / R_c (상한 4), "
           f"시간 / T (T = {sim.cfg['max_episode_len']}), 크기 = min(1, log(1+n) / log(1+{sim.explore_cfg['size_ref']})), 배정 수 / N (N = {sim.n_agents})")
-    print(f"그래프 크기: U = N {sim.n_agents}, S = s_max {sim.s_max}, K = k_max {sim.k_max}.  결정 그래프 수 {n_graph} "
-          f"(role = 역할 선택, rescue = 생존자 할당, s1 = frontier 할당)")
+    print(f"그래프 크기: U = N {sim.n_agents} (연결 + 메모리 노드), S = s_max {sim.s_max}, F = k_max {sim.k_max}.  "
+          f"결정 그래프 수 {n_graph} (role = 역할 선택, rescue / s1 = task (하위 할당) RESCUE / EXPLORE)")
     print("== per-agent keys ==")
     for k, sp in ag.items():
         print(f"  {k:<18} {str(sp.shape):<14}")
@@ -86,18 +88,18 @@ def main(seed=0, steps=120):
     print("== action ==")
     for k, sp in env.action_space.spaces.items():
         print(f"  {k:<12} N x Discrete({sp.spaces[0].n})")
-    names = {"U": U_FEATURES, "S": S_FEATURES, "K": K_FEATURES}
-    for st, title in (("role", "역할 선택 (U 그룹 전체 · S)"), ("rescue", "생존자 할당 (U = RESCUE UAV · S)"),
-                      ("s1", "frontier 할당 (U = EXPLORE UAV · K)")):
+    names = {"U": U_FEATURES, "S": S_FEATURES, "F": F_FEATURES}
+    for st, title in (("role", "역할 선택 (U · S · F)"), ("rescue", "task (하위 할당) — RESCUE (U · S · F)"),
+                      ("s1", "task (하위 할당) — EXPLORE 1 단계 (U · S · F)")):
         print(f"\n######## {title} ########")
-        for t in ("U", "S", "K"):
+        for t in ("U", "S", "F"):
             if f"{st}:{t}" in vals:
                 table(f"{t} 노드 {len(names[t])}", names[t], vals[f"{st}:{t}"])
+        if f"{st}:ctx" in vals:
+            table(f"그룹 context {len(CONTEXT_FEATURES)}", CONTEXT_FEATURES, vals[f"{st}:ctx"])
         for k, nm in EDGE_FEATURES.items():
             if f"{st}:{k}" in vals:
                 table(f"{k[0]}–{k[1]} 간선 {len(nm)}", nm, vals[f"{st}:{k}"])
-    table("role_g_res (모델 입력 아님 — 진단)", ROLE_G_RES_FEATURES, vals.get("role_g_res"))
-    table("role_g_exp (모델 입력 아님 — 진단)", ROLE_G_EXP_FEATURES, vals.get("role_g_exp"))
     table("critic role_self", ROLE_SELF_FEATURES, vals.get("role_self"))
     table("critic role_group", ROLE_GROUP_FEATURES, vals.get("role_group"))
 

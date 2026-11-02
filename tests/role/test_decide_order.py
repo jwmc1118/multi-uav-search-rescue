@@ -10,16 +10,17 @@ role_order (B-1)
  [5] σ 는 이벤트 시작 D_0 기준 고정: 가까운 UAV 가 먼저 빠져도 생존자 순서가 바뀌지 않음
  [6] 학습 경로: 맨 앞 UAV 가 EXPLORE / 다른 생존자를 고르면 비어 있는 생존자의 가장 가까운 UAV 가 바로 다음 차례
  [7] 그리디: [1] 배치에서 R1 -> A, R4 -> B RESCUE, 나머지 EXPLORE / GUI 장면 (R0 멀리, R4 바로 옆) 은 R4 가 RESCUE
-explore_order (B-3, share_rr)
- [8] 덩어리 (10, 9, 8), UAV 5 대 -> 한 바퀴 C1, C2, C3 -> 몫 기준 C1, C2 / (50, 6, 4) -> C1 3 대, C2 · C3 1 대씩 /
-     4 개, UAV 2 대 -> 가장 큰 두 덩어리 / 멀리 있는 2 셀 덩어리도 첫 바퀴에 배정
- [9] 기존 배정자가 있는 덩어리는 첫 바퀴에서 건너뛰고 몫 계산에 포함
-[10] 학습 경로: 맨 앞 UAV 가 다른 덩어리를 고르면 실제 선택으로 n_k 가 갱신되어 차례가 바뀜
-영역 유지 (1 단계는 영역이 없는 신규 EXPLORE UAV 만)
-[12] 이벤트 2 에서 R1 -> RESCUE, R2 / R3 EXPLORE 유지: 영역 · 구간 · goal 그대로, 1 단계 참여 없음
+explore_order (B-3, 점수 (N_m / (n_m + 1)) / (d + 1)^α 최대 쌍, α = 1 — 단위 점검은 tests/role/test_explore_order.py)
+ [8] 덩어리 (10, 9, 8) · UAV 5 대 / (50, 6, 4) · 5 대 / 4 개 · 2 대 / 먼 2 셀 덩어리: env 그리디의 1 단계 차례 · 덩어리가 점수 규칙을
+     따로 계산한 결과와 같다 (한 대마다 n 갱신)
+ [9] 기존 배정자가 있는 덩어리는 n 에 포함 (재결정하지 않는 기존 배정자)
+[10] 학습 경로: 맨 앞 UAV 가 담당 후보 대신 다른 덩어리를 고르면 실제 선택으로 n_m 이 갱신되어 다음 차례가 바뀜
+재결정 (EXPLORE 를 고른 재결정 UAV 는 전원 1 단계, 같은 덩어리 재선택 = 새 표본 아님)
+[12] 이벤트 "1" 에서 R1 -> RESCUE, R2 / R3 EXPLORE: 1 단계에 참여해 같은 덩어리를 다시 고름 -> explore_valid 0 (옵션 계속),
+     explore keep 2 / 2
 [13] R1 이 빠진 영역은 rebalance 로 다시 나뉘고 남은 UAV 는 자기 goal 쪽 구간 유지
 [14] 구조를 마치고 EXPLORE 로 돌아온 UAV 는 1 단계 참여
-[15] 유지 UAV 의 영역에 신규 UAV 가 합류하면 유지 UAV 도 2 단계 재선택 참여
+[15] 새 UAV 가 R1~R3 의 덩어리에 합류하고 R1~R3 도 같은 step 에 재결정 -> 넷 다 1 단계 · 2 단계, 새 표본은 R0 만
 학습 모델
 [11] 정책 rollout 에서 모델이 디코딩한 차례 (role / 1 단계 / 2 단계) == env 가 재현한 차례 (모든 step), 앞 차례 결정이 Context 에
 """
@@ -33,7 +34,7 @@ from tests.role.test_explore import line, place, set_front, tick, ROWS, COLS
 E, R, D = Mode.EXPLORE.value, Mode.RESCUE.value, Mode.RETURN.value
 
 
-def run_decide(sim, role=None, rescue=None, explore=None, ev="2", parties=None):
+def run_decide(sim, role=None, rescue=None, explore=None, ev="1", parties=None):
     """parties (기본 전원) 에 이벤트 ev, role / rescue / explore = {UAV: 값} 또는 None (None 이면 그리디).
     rescue 값은 생존자 번호 (그 UAV 슬롯으로 바꿈). 반환 (role 차례, s1 차례)."""
     g = RuleDecider()
@@ -55,8 +56,9 @@ def run_decide(sim, role=None, rescue=None, explore=None, ev="2", parties=None):
     def explore_fn(i, m):
         k = (explore or {}).get(i)
         return k if k is not None and m[k] else g.explore(sim, i, m)
-    _, _, _, viol = sim._decide(role_fn, rescue_fn, explore_fn, lambda i, m: g.explore_sub(sim, i, m))
+    _, sv, _, viol = sim._decide(role_fn, rescue_fn, explore_fn, lambda i, m: g.explore_sub(sim, i, m))
     assert viol == 0 and sim.mask_violation_step == 0
+    sim._last_sv = sv
     return [j for st, j in sim.decision_seq if st == "role"], [j for st, j in sim.decision_seq if st == "s1"]
 
 
@@ -171,7 +173,7 @@ def check_greedy_assign():
     assert modes[4] is Mode.RESCUE and sim.agents[4].assigned_target == b
     assert all(modes[i] is Mode.EXPLORE for i in (0, 2, 3)), modes
     st = sim.ev_stats
-    assert st["ev2_rescue"] == 2 and st["ev2_rescue_by_claim"] == 2 and st["claim_not_rescue"] == 0
+    assert st["ev1_rescue"] == 2 and st["ev1_rescue_by_claim"] == 2 and st["claim_not_rescue"] == 0
     sim = fresh(5)                                                    # GUI 장면: R0 멀리 (번호 작음), R4 바로 옆
     sim.time = 0
     place(sim, [(5, 5), (28, 2), (28, 4), (28, 6), (20, 30)])
@@ -184,9 +186,12 @@ def check_greedy_assign():
           f"far R0 EXPLORE (order {order})")
 
 
+ALPHA = 1.0
+
+
 def blob_scene(sizes, n_uav, uav_pos, far=None):
-    """덩어리 = 서로 떨어진 가로 줄 (크기 sizes). 반환 sim, 줄 첫 셀 목록."""
-    sim = fresh(n_uav)
+    """덩어리 = 서로 떨어진 가로 줄 (크기 sizes). 반환 sim, 줄 첫 셀 목록. 1 단계 차례 α = ALPHA."""
+    sim = fresh(n_uav, explore={"order_dist_alpha": ALPHA})
     sim.time = 0
     place(sim, uav_pos)
     front = np.zeros((ROWS, COLS), bool)
@@ -210,70 +215,97 @@ def blob_of(sim, i, starts):
     return next(k for k, st in enumerate(starts) if st in cells)
 
 
+def expected_turns(sim, uavs, forced=None):
+    """점수 규칙을 따로 계산: 남은 UAV x 닿는 덩어리 쌍 중 (N / (n + 1)) / (d + 1)^α 최대 (동률 큰 덩어리 -> 슬롯 -> 거리 -> 번호),
+    고른 덩어리 n += 1 (n 초기값 = 재결정하지 않는 기존 배정자). forced = {차례 번호: 슬롯} (학습 경로처럼 다른 덩어리를 고름).
+    반환 [(UAV, 슬롯)]."""
+    g = sim.comp[uavs[0]]
+    slots = sim.group_clusters[g]
+    n = {b.id: sum(1 for j in sim.groups[g] if j not in uavs and sim.agents[j].mode is Mode.EXPLORE and sim.agents[j].blob == b.id)
+         for b in slots}
+    rem, out = list(uavs), []
+    while rem:
+        best = None
+        for j in rem:
+            m = sim.explore_mask(j)
+            for k, b in enumerate(slots):
+                if not m[k]:
+                    continue
+                d = sim.blob_dist(j, b)
+                size = len(b.cell_set())
+                score = (size / (n[b.id] + 1)) / (d + 1) ** ALPHA
+                key = (-score, -size, k, d, j)
+                if best is None or key < best[0]:
+                    best = (key, j, k)
+        _, j, k = best
+        k = (forced or {}).get(len(out), k)
+        out.append((j, k))
+        n[slots[k].id] += 1
+        rem.remove(j)
+    return out
+
+
+def actual_turns(sim):
+    slots = {b.id: k for k, b in enumerate(sim.group_clusters[0])}
+    return [(j, slots[sim.agents[j].blob]) for s, j in sim.decision_seq if s == "s1"]
+
+
 def check_explore_order():
     pos5 = [(5, 20), (11, 20), (17, 20), (23, 20), (13, 30)]
-    sim, st = blob_scene([10, 9, 8], 5, pos5)
-    _, s1 = run_decide(sim, role={i: E for i in range(5)}, ev="1")
-    got = [blob_of(sim, i, st) for i in s1]
-    assert got == [0, 1, 2, 0, 1], (s1, got)
-    sim, st = blob_scene([50, 6, 4], 5, pos5)
-    _, s1 = run_decide(sim, role={i: E for i in range(5)}, ev="1")
-    cnt = np.bincount([blob_of(sim, i, st) for i in range(5)], minlength=3).tolist()
-    assert cnt == [3, 1, 1], cnt
-    sim, st = blob_scene([10, 9, 8, 7], 2, [(5, 20), (20, 20)])
-    _, s1 = run_decide(sim, role={0: E, 1: E}, ev="1")
-    two = sorted(blob_of(sim, i, st) for i in range(2))
-    assert two == [0, 1], two
-    sim, st = blob_scene([10, 2], 2, [(3, 5), (5, 6)], far=1)          # 2 셀 덩어리는 멀리 (오른쪽 끝)
-    _, s1 = run_decide(sim, role={0: E, 1: E}, ev="1")
-    far = sorted(blob_of(sim, i, st) for i in range(2))
-    assert far == [0, 1], far
-    print(f"[8] share_rr: (10, 9, 8) x 5 UAVs -> {got} (round C1 C2 C3, then share C1 C2); (50, 6, 4) -> counts {cnt}; "
-          f"4 blobs x 2 UAVs -> {two}; far 2-cell blob still gets a UAV in round 1")
+    out = []
+    for sizes, n_uav, pos, far in (([10, 9, 8], 5, pos5, None), ([50, 6, 4], 5, pos5, None),
+                                   ([10, 9, 8, 7], 2, [(5, 20), (20, 20)], None), ([10, 2], 2, [(3, 5), (5, 6)], 1)):
+        sim, st = blob_scene(sizes, n_uav, pos, far=far)
+        want = expected_turns(sim, list(range(n_uav)))
+        run_decide(sim, role={i: E for i in range(n_uav)}, ev="periodic")
+        got = actual_turns(sim)
+        assert got == want, (sizes, got, want)
+        out.append((sizes, np.bincount([k for _, k in got], minlength=len(sizes)).tolist()))
+    print(f"[8] stage-1 turns follow the score rule (N/(n+1))/(d+1)^α (α {ALPHA}, n updated per turn) — UAVs per blob: "
+          + "; ".join(f"{sz} -> {c}" for sz, c in out))
 
 
 def check_existing_assignee():
-    pos = [(5, 20), (11, 20), (17, 20)]
-    sim, st = blob_scene([10, 9, 8], 3, pos)
-    sim.agents[0].mode = Mode.EXPLORE
-    sim.agents[0].blob = next(b.id for b in sim.clusters_of(0) if st[0] in b.cell_set())   # R0 이 C1 의 기존 배정자
+    pos = [(5, 20), (11, 20), (17, 20), (23, 20)]
+    sim, st = blob_scene([10, 9, 8], 4, pos)
+    c1 = next(b.id for b in sim.clusters_of(0) if st[0] in b.cell_set())
+    sim.agents[0].mode, sim.agents[0].blob = Mode.EXPLORE, c1          # R0 이 C1 의 기존 배정자 (재결정 안 함)
     tick(sim)
-    _, s1 = run_decide(sim, role={1: E, 2: E}, parties=[1, 2])
-    got = [blob_of(sim, i, st) for i in s1]
-    assert got == [1, 2], (s1, got)                                    # C1 은 배정 1 -> 첫 바퀴 건너뜀
-    sim, st = blob_scene([10, 9, 8], 4, pos + [(23, 20)])
-    sim.agents[0].mode = Mode.EXPLORE
-    sim.agents[0].blob = next(b.id for b in sim.clusters_of(0) if st[0] in b.cell_set())
-    tick(sim)
-    _, s1 = run_decide(sim, role={1: E, 2: E, 3: E}, parties=[1, 2, 3])
-    got3 = [blob_of(sim, i, st) for i in s1]
-    assert got3 == [1, 2, 0], got3                                     # 몫: 10/2 = 5 > 9/2, 8/2 -> C1
-    print(f"[9] existing assignee on C1: skipped in round 1 {got}, counted in share (3rd UAV -> C1, 10/2 = 5): {got3}")
+    want = expected_turns(sim, [1, 2, 3])
+    run_decide(sim, role={1: E, 2: E, 3: E}, parties=[1, 2, 3])
+    got = actual_turns(sim)
+    assert got == want, (got, want)
+    sim2, st2 = blob_scene([10, 9, 8], 4, pos)                         # 기존 배정자 없음 (비교)
+    free = expected_turns(sim2, [1, 2, 3])
+    assert want != free, "기존 배정자가 n 에 들어가면 차례가 달라져야 하는 장면"
+    print(f"[9] existing assignee R0 on C1 counted in n_C1: turns {got} (without it {free})")
 
 
 def check_explore_learned():
     pos5 = [(5, 20), (11, 20), (17, 20), (23, 20), (13, 30)]
     sim, st = blob_scene([10, 9, 8], 5, pos5)
+    first_free = expected_turns(sim, list(range(5)))
+    alt = next(k for k in range(3) if k != first_free[0][1])            # 첫 차례 UAV 는 담당 후보 대신 다른 덩어리
+    want = expected_turns(sim, list(range(5)), forced={0: alt})
     first = None
 
     def pick(i, m):
         nonlocal first
-        if first is None:                                              # 첫 차례 UAV 는 담당 후보 (C1) 대신 C3
+        if first is None:
             first = i
-            return next(k for k, b in enumerate(sim.clusters_of(i)) if st[2] in b.cell_set())
+            return alt
         return None
     g = RuleDecider()
-    sim.events = [{"1"} for _ in range(5)]
+    sim.events = [{"periodic"} for _ in range(5)]
     sim._set_decide_order()
     sim.mask_violation_step = 0
     sim._decide(lambda i, m: E, lambda i, m: g.rescue(sim, i, m),
                 lambda i, m: pick(i, m) if first is None else g.explore(sim, i, m),
                 lambda i, m: g.explore_sub(sim, i, m))
-    s1 = [j for s, j in sim.decision_seq if s == "s1"]
-    got = [blob_of(sim, i, st) for i in s1]
-    assert got[0] == 2 and got[1] == 0, (s1, got)                      # C3 가 n=1 -> 다음 차례는 아직 0 인 C1 에 가장 가까운 UAV
-    print(f"[10] learned path: first UAV picks C3 instead of claimed C1 -> n_C3 = 1 by the real choice, next turn goes to "
-          f"C1: blobs in order {got}")
+    got = actual_turns(sim)
+    assert got == want and got[1:] != first_free[1:], (got, want, first_free)
+    print(f"[10] learned path: first UAV picks slot {alt} instead of claimed {first_free[0][1]} -> n updated by the real choice, "
+          f"later turns change: {got} (greedy would be {first_free})")
 
 
 def retain_scene():
@@ -295,16 +327,15 @@ def check_retain():
     sim, bid = retain_scene()
     v = add_victim(sim, (14, 2), deadline=200)
     tick(sim)
-    before = {i: (sim.agents[i].blob, sim.agents[i].cluster, sim.agents[i].goal) for i in (2, 3)}
-    order, s1 = run_decide(sim, parties=[1, 2, 3])                     # 이벤트 2: 그룹의 EXPLORE UAV
+    order, s1 = run_decide(sim, parties=[1, 2, 3])                     # 이벤트 "1" (재결정 대상 R1~R3)
     assert sim.agents[1].mode is Mode.RESCUE and sim.agents[1].assigned_target == v, order
-    assert s1 == [], s1                                                # 유지 UAV 는 1 단계 없음
-    for i in (2, 3):
-        a = sim.agents[i]
-        assert (a.blob, a.cluster, a.goal) == before[i], (i, before[i], (a.blob, a.goal))
-    assert sim.ev_stats["ev2_retained"] == 2 and sim.ev_stats["ev2_retained_blob_changed"] == 0
-    print(f"[12] event 2: R1 -> RESCUE T{v}, R2 / R3 keep EXPLORE: blob, segment and goal unchanged, no stage 1 (s1 {s1})")
-    g2, g3 = before[2][2], before[3][2]
+    sv = sim._last_sv
+    assert sorted(s1) == [2, 3] and all(sim.agents[i].blob == bid for i in (2, 3)), (s1, [sim.agents[i].blob for i in (2, 3)])
+    assert [sv["explore_s1"][i] for i in (2, 3)] == [False, False] and [sv["explore_s1_all"][i] for i in (2, 3)] == [True, True]
+    assert sim.ev_stats["explore_keep"] == 2 and sim.ev_stats["explore_redecide"] == 2
+    print(f"[12] event 1: R1 -> RESCUE T{v}, R2 / R3 re-decide EXPLORE: stage 1 (s1 {s1}), same blob again -> explore_valid 0 "
+          f"(option continues), keep 2 / 2")
+    g2, g3 = sim.agents[2].goal, sim.agents[3].goal
     n_before = (len(sim.agents[2].cluster), len(sim.agents[3].cluster))
     sim.agents[1].pos = (14, 3)
     tick(sim)                                                          # rebalance: 담당 2 대로 다시 나눔
@@ -329,9 +360,9 @@ def check_back_to_explore():
     sim.targets[v].rescued_at = sim.time
     a1.assigned_target = None
     tick(sim)
-    _, s1 = run_decide(sim, role={1: E}, ev="3", parties=[1])
+    _, s1 = run_decide(sim, role={1: E}, ev="2", parties=[1])
     assert s1 == [1] and sim.agents[1].blob is not None, s1
-    print(f"[14] R1 back to EXPLORE after its rescue (event 3) -> joins stage 1 (s1 {s1}), blob C{sim.agents[1].blob}")
+    print(f"[14] R1 back to EXPLORE after its rescue (event 2) -> joins stage 1 (s1 {s1}), blob C{sim.agents[1].blob}")
 
 
 def check_retained_join():
@@ -339,14 +370,15 @@ def check_retained_join():
     sim.agents[0].capacity, sim.agents[0].mode = 3, Mode.RETURN       # R0 이 귀환을 마치고 EXPLORE 로 (신규)
     sim.agents[0].pos = (16, 10)
     tick(sim)
-    sim.events = [{"4"}, {"2"}, {"2"}, {"2"}]                          # R1~R3 도 같은 이벤트에 재결정 (EXPLORE 유지)
-    order, s1 = run_decide(sim, role={0: E, 1: E, 2: E, 3: E}, parties=[0, 1, 2, 3], ev="2")
+    order, s1 = run_decide(sim, role={0: E, 1: E, 2: E, 3: E}, parties=[0, 1, 2, 3], ev="1")   # R1~R3 도 같은 이벤트에 재결정
     s2 = [j for st, j in sim.decision_seq if st == "s2"]
-    assert s1 == [0] and sim.agents[0].blob == bid, (s1, sim.agents[0].blob)
-    assert sorted(s2) == [0, 1, 2, 3], s2                              # 유지 UAV R1~R3 도 2 단계 참여
-    assert sim.ev_stats["reselect_uavs"] == 3
-    print(f"[15] new UAV R0 joins the blob kept by R1~R3 -> all four take part in stage 2 (order {s2}); "
-          f"kept UAVs re-select segment only")
+    sv = sim._last_sv
+    assert sorted(s1) == [0, 1, 2, 3] and all(sim.agents[i].blob == bid for i in range(4)), (s1, sim.agents[0].blob)
+    assert sorted(s2) == [0, 1, 2, 3], s2                              # 넷 다 2 단계 참여
+    assert sv["explore_s1"] == [True, False, False, False], sv["explore_s1"]   # 새 표본은 새로 EXPLORE 인 R0 만
+    assert sim.ev_stats["reselect_uavs"] == 0                          # 1 단계를 안 한 기존 배정자 없음
+    print(f"[15] new UAV R0 joins the blob of R1~R3 which re-decide in the same step -> all four in stage 1 and stage 2 "
+          f"(order {s2}); only R0 is a new explore sample (R1~R3 same blob -> option continues)")
 
 
 def check_model_order(steps=150):
@@ -354,7 +386,7 @@ def check_model_order(steps=150):
     from tests.role.smoke_role_policy import base_config, make
     from training.catalog import register_all
     register_all()
-    env, prep, policy = make(base_config(mode=("learned", "learned", "learned")))
+    env, prep, policy = make(base_config(mode=("learned", "learned")))
     N = env.n_agents
     n_cmp = 0
     for seed in range(3):

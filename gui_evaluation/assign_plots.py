@@ -1,6 +1,6 @@
-"""임무 할당 분석 그래프 (논문용) — gui_evaluation/alloc_recorder.py 의 snapshot() 을 받아 그림 + 원자료를 저장한다.
+"""임무 할당 분석 그래프 (논문용) — gui_evaluation/assign_recorder.py 의 snapshot() 을 받아 그림 + 원자료를 저장한다.
 
-    out_dir = save_alloc_plots(recorder.snapshot(sim), figures_root)
+    out_dir = save_assign_plots(recorder.snapshot(sim), figures_root)
 
 저장 (out_dir = figures_root/YYYYMMDD_HHMMSS_<policy>_t<최종 step>/):
     gantt          UAV 역할 Gantt (행 = UAV, 모드 띠 + 태스크 id, ★ 구조 / ✕ 배정 중 만료 / ▲ 재보충)
@@ -133,7 +133,7 @@ def plot_gantt(data, out_dir):
     ax.set_xlim(0, max(1, T))
     ax.set_ylim(-0.8, n - 0.2)
     ax.set_xlabel("time step")
-    ax.set_title("UAV role timeline (allocation)")
+    ax.set_title("UAV role timeline (assignment)")
     handles = [Patch(facecolor="0.85", edgecolor="0.4", label="explore"),
                Patch(facecolor="0.35", edgecolor="0.4", label="rescue (T = task id)"),
                Patch(facecolor="white", edgecolor="0.4", hatch="////", label="return"),
@@ -348,7 +348,7 @@ def plot_snapshots(data, out_dir, k=6):
         ax.axis("off")
     handles = [Line2D([], [], color=_rgb01(agent_hex(i)), marker="o", lw=1.2, label=f"R{i} → goal") for i in range(n)]
     fig.legend(handles=handles, loc="lower center", ncol=min(n, 8), frameon=False, bbox_to_anchor=(0.5, -0.01))
-    fig.suptitle("Allocation snapshots (arrow = current goal: task / frontier / depot)", fontsize=10)
+    fig.suptitle("Assignment snapshots (arrow = current goal: task / frontier / depot)", fontsize=10)
     fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.1, wspace=0.08, hspace=0.35)
     _save(fig, out_dir, "snapshots")
 
@@ -371,7 +371,7 @@ def folder_name(meta, now=None):
     return f"{stamp}_{policy or 'policy'}_t{meta.get('final_t', 0)}"
 
 
-def save_alloc_plots(data, figures_root):
+def save_assign_plots(data, figures_root):
     """그래프 6 종 (png + pdf) + 원자료 (csv / json) 저장. 반환: 저장 폴더."""
     counts = check_consistency(data)
     out_dir = os.path.join(figures_root, folder_name(data["meta"]))

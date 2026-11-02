@@ -1,13 +1,13 @@
 """RoleModel — models/role/net.py 를 RLlib 1.3 TorchModelV2 로 감싼 것 (계층 구조 env, env/role/gym_env.py).
 
-행동 공간 Dict{role, rescue, explore} — gym 이 키를 정렬하므로 평탄화 순서 = [explore | rescue | role].
+행동 공간 Dict{role, task} — gym 이 키를 정렬하므로 평탄화 순서 = [role | task].
 모델 출력 레이아웃 (training/role/action_dist.py 와 약속):
-    [ explore logits N*K | rescue logits N*T | role logits N*3 | 행동 passthrough: explore N | rescue N | role N ]
+    [ role logits N*3 | task logits N*(T+K) | 행동 passthrough: role N | task N ]
 logits 는 순차 디코딩의 결정 시점 마스크가 적용된 값. 행동은 모델이 순차 디코딩으로 뽑은 값을 그대로 쓴다.
-explore = 1 단계 (덩어리) 만 (2 단계 구간 배정은 env 의 κ Hungarian).
-학습 forward 는 SampleBatch.ACTIONS (폭 3N, 순서 explore | rescue | role) 로 디코딩을 재생해 같은 logits 를 만든다.
-value_function() = 실제 스케일 {'role', 'rescue', 'explore'} (B, N), value_function_norm() = critic 출력 그대로.
-greedy = True 면 (평가) 세 헤드 모두 argmax.
+task = 하위 할당 (S 노드 생존자 0 .. T-1 / F 노드 덩어리 T .. T+K-1, 1 단계만 — 2 단계 구간 배정은 env 의 거리 Hungarian).
+학습 forward 는 SampleBatch.ACTIONS (폭 2N, 순서 role | task) 로 디코딩을 재생해 같은 logits 를 만든다.
+value_function() = 실제 스케일 {'role', 'rescue', 'explore'} (B, N) (rescue / explore = task critic 의 역할별 head),
+value_function_norm() = critic 출력 그대로. greedy = True 면 (평가) 두 head 모두 argmax.
 """
 import numpy as np
 import torch
@@ -21,12 +21,11 @@ from ray.rllib.utils.annotations import override
 
 from models.role.net import RoleNet, stack_role_obs
 
-# rollout 시 extra_action_out 으로 저장되는 헤드별 컬럼 (role 헤드는 RLlib 기본 키 VF_PREDS / ACTION_LOGP)
+# rollout 시 extra_action_out 으로 저장되는 컬럼 (role 은 RLlib 기본 키 VF_PREDS / ACTION_LOGP)
 VF_PREDS_RESCUE = "vf_preds_rescue"
 VF_PREDS_EXPLORE = "vf_preds_explore"
-ACTION_LOGP_RESCUE = "action_logp_rescue"
-ACTION_LOGP_EXPLORE = "action_logp_explore"
-EXTRA_KEYS = (VF_PREDS_RESCUE, VF_PREDS_EXPLORE, ACTION_LOGP_RESCUE, ACTION_LOGP_EXPLORE)
+ACTION_LOGP_TASK = "action_logp_task"
+EXTRA_KEYS = (VF_PREDS_RESCUE, VF_PREDS_EXPLORE, ACTION_LOGP_TASK)
 
 
 def role_dims(orig):
@@ -44,7 +43,7 @@ class RoleModel(TorchModelV2, nn.Module):
         orig = obs_space.original_space
         ag = orig["agents"][0]
         self.n_agents = len(orig["agents"])
-        self.max_targets = ag["s_ids"].shape[0]               # S 노드 수 = s_max (rescue 행동 공간)
+        self.max_targets = ag["s_ids"].shape[0]               # S 노드 수 = s_max (할당 행동 앞쪽)
         self.k_max = ag["k_pos"].shape[0]
         S, _, C = ag["local"].shape
         self.net = RoleNet(self.n_agents, self.max_targets, self.k_max, S, C, orig["state"].shape[-1],
@@ -68,14 +67,14 @@ class RoleModel(TorchModelV2, nn.Module):
         taken_d = None
         if taken is not None and not torch.is_tensor(taken):
             taken = torch.as_tensor(np.asarray(taken), device=ob["role_self"].device)
-        if torch.is_tensor(taken) and taken.dim() == 2 and taken.shape[1] == 3 * N:
-            taken_d = {"explore": taken[:, :N].long(), "rescue": taken[:, N:2 * N].long(), "role": taken[:, 2 * N:].long()}
+        if torch.is_tensor(taken) and taken.dim() == 2 and taken.shape[1] == 2 * N:
+            taken_d = {"role": taken[:, :N].long(), "task": taken[:, N:].long()}
         out = self.net(ob, taken=taken_d, greedy=self.greedy)
         self._values, self._values_norm = out["values"], out["values_norm"]
         self.last_out = out
         lg, act = out["logits"], out["actions"]
-        logits = torch.cat([lg["explore"].reshape(B, -1), lg["rescue"].reshape(B, -1), lg["role"].reshape(B, -1),
-                            act["explore"].float(), act["rescue"].float(), act["role"].float()], dim=1)
+        logits = torch.cat([lg["role"].reshape(B, -1), lg["task"].reshape(B, -1),
+                            act["role"].float(), act["task"].float()], dim=1)
         return logits, state
 
     @override(ModelV2)

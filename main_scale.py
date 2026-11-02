@@ -5,10 +5,11 @@
     python main_scale.py --checkpoint <ckpt> --preset fixed          # UAV 수만 바꿈
     python main_scale.py --checkpoint <ckpt> --workers 8             # (N, seed) 단위 병렬 (기본 = CPU 코어 수 - 2)
 
-설정: scale_evaluation/config/scale.yaml (CLI 인자가 우선). N 마다 환경 = 체크포인트 env_config -> scale.yaml env.files ->
-env.overrides -> presets 크기 조정 (r = N / N_ref, scale_evaluation/scaling.py). 체크포인트 가중치를 그대로 싣고 관측 shape 를
-정하는 키 (state_size / local_channels / s_max / k_max / n_sub_max) 는 체크포인트 값, rows / cols / max_targets /
-max_episode_len 만 풀어 준다. N 마다 두 정책을 같은 seed 로 실행하고 seed 별 초기 상태가 같은지 확인한다.
+설정: 실행 설정 (N 목록, seed, preset, mode, workers, bootstrap, 그림) = scale_evaluation/config/scale.yaml (CLI 인자가 우선).
+기준 env = scale_evaluation/config/env_scale.yaml → role_scale.yaml → task_scale.yaml 병합 (training/config 와 같은 값으로 유지,
+tests/role/test_config.py). N 마다 환경 = 기준 env 위에 presets 크기 조정 (--preset / --n, r = N / N_ref, scale_evaluation/scaling.py).
+체크포인트는 가중치와 관측 shape 키에만 쓴다: SHAPE_KEYS (state_size / local_channels / global_downsample / s_max) + cluster.k_max 는
+체크포인트 값으로 고정 (meta.json forced_checkpoint_keys), rows / cols / max_targets / max_episode_len 은 풀어 준다. N 마다 두 정책을 같은 seed 로 실행하고 seed 별 초기 상태가 같은지 확인한다.
 추론 시간 (ms / 결정) 은 CPU 벽시계 (결정이 있던 step 의 모델 act() 시간 합 / 결정 수, 워커당 torch 스레드 1).
 병렬: 모든 (N, seed) 를 한 워커 풀 (spawn, CPU) 에서 처리 — 워커는 체크포인트 가중치를 한 번만 읽고 N 이 바뀌면 모델만 새로
 만든다 (eval_common/parallel.py, ray 없음). 결과는 N · seed 순 정렬 — workers 수와 무관하게 같다 (추론 시간 제외).
@@ -54,6 +55,7 @@ def main():
     from eval_common.stats import HAS_SCIPY
     from scale_evaluation import compare, plots
     from scale_evaluation.scaling import describe, scaled_env_config
+    from training.config_loader import SCALE_FILES
 
     with open(os.path.join(_CALLER_CWD, args.config) if not os.path.isabs(args.config) else args.config) as f:
         cfg = yaml.safe_load(f) or {}
@@ -81,7 +83,7 @@ def main():
 
     base, n_ref, ckpt = compare.base_env(cfg)
     if rule.get("map") is not None and base.get("map_mode") != "random":
-        raise SystemExit(f"맵 크기 조정은 map_mode: random 에서만 (지금 {base.get('map_mode')!r}) — preset fixed 를 쓰거나 env.overrides")
+        raise SystemExit(f"맵 크기 조정은 map_mode: random 에서만 (지금 {base.get('map_mode')!r}) — preset fixed 를 쓰거나 env_scale.yaml")
     envs = {n: scaled_env_config(base, n, n_ref, rule) for n in ns}
     out = make_run_dir("scale_evaluation", f"{cfg.get('tag') or 'scale'}_{cfg['preset']}")
     print(f"[scale] checkpoint {os.path.relpath(ckpt, ROOT)}  N_ref {n_ref}  N {ns}  seeds {cfg['seeds']} ({len(seeds)})  "
@@ -107,7 +109,7 @@ def main():
         figs = plots.make_all(summary, infer, ns, n_ref, out, fig_cfg, secondary)
     write_json(os.path.join(out, "meta.json"), {
         "script": "main_scale.py", "argv": sys.argv[1:], "config": cfg, "checkpoint": ckpt, "n_ref": n_ref,
-        "preset_rule": rule, "env_config_base": base, "env_config_used": {str(n): used[n] for n in ns},
+        "preset_rule": rule, "env_config_files": [os.path.relpath(f, ROOT) for f in SCALE_FILES], "env_config_base": base, "env_config_used": {str(n): used[n] for n in ns},
         "forced_checkpoint_keys": {str(n): warns[n] for n in ns}, "git": git_info(), "seeds": seeds,
         "workers": workers, "torch_threads_per_worker": 1, "inference_device": "cpu",
         "statistics": f"per N: mean ± 95% bootstrap CI ({boot['n']} resamples, seed {boot['seed']}), n = {len(seeds)} "

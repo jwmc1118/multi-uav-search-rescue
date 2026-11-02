@@ -1,4 +1,4 @@
-"""N 별 환경 설정 (main_scale.py) — 체크포인트 기준 env_config 를 r = N / N_ref 로 크기 조정.
+"""N 별 환경 설정 (main_scale.py) — 평가 기준 env_config (scale_evaluation/config/*_scale.yaml) 를 r = N / N_ref 로 크기 조정.
 
     scaled_env_config(base, n, n_ref, rule)   rule = {survivors, map, golden_time, max_episode_len: 지수 e 또는 None}
         값 <- round(값 x r^e) (None = 그대로). num_targets / target_golden_time 은 int 또는 [min, max] 모두 처리.

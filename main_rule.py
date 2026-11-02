@@ -1,16 +1,21 @@
 """규칙 정책 vs 학습 모델 몬테카를로 비교 (GUI 없음, 결과 파일만 저장).
 
-    python main_rule.py --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000200
-    python main_rule.py --checkpoint <ckpt> --seeds 0-9 --mode sample --tag quick
-    python main_rule.py --config rule_evaluation/config/rule.yaml --no-figs
-    python main_rule.py --checkpoint <ckpt> --workers 8          # seed 단위 병렬 (기본 = CPU 코어 수 - 2)
+    python main_rule.py --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000200            # 둘 다 + 짝 비교 (--run both)
+    python main_rule.py --run rule --seeds 0-99                                                     # 규칙 정책만 (체크포인트 불필요)
+    python main_rule.py --run learned --checkpoint <ckpt> --seeds 0-99                              # 학습 모델만
+    python main_rule.py --checkpoint <ckpt> --seeds 0-9 --mode sample --tag quick --workers 8 --no-figs
 
-설정: rule_evaluation/config/rule.yaml (CLI 인자가 우선). 환경 = 체크포인트 env_config -> rule.yaml env.files -> env.overrides
-(관측 shape 키는 체크포인트 값). 두 정책 (규칙 = policies/role_rules.py RuleDecider, 모델 = 체크포인트) 을 같은 seed 목록으로
+--run {both, rule, learned} (기본 both): both = 규칙 (role · task 모두 rule) + 학습 모델 (체크포인트 가중치, policy_mode 는
+평가 env 값 — 예: role learned / task rule) 을 같은 seed 로 실행하고 짝 비교 통계 · 비교 그림까지. rule / learned = 그 정책만
+실행해 그 정책의 표 · 그림만 (짝 비교 통계 · 비교 그림은 건너뜀).
+설정: 실행 설정 (seed, mode, workers, bootstrap, 그림) = rule_evaluation/config/rule.yaml (CLI 인자가 우선).
+평가 env = rule_evaluation/config/env_rule.yaml → role_rule.yaml → task_rule.yaml 병합 (training/config 와 같은 값으로 유지,
+tests/role/test_config.py) — --run 과 무관하게 같은 env. 체크포인트는 가중치와 관측 shape 키 (SHAPE_KEYS + cluster.k_max) 에만
+쓰고, 그 키가 평가 env 와 다르면 체크포인트 값으로 고정 (meta.json forced_checkpoint_keys). 두 정책을 같은 seed 목록으로
 실행하고 seed 별 초기 상태 (맵 / depot / 조난자 / 골든타임) 가 같은지 확인한다.
 병렬: seed 단위로 나눠 워커 (spawn, CPU, torch 스레드 1) 가 체크포인트 가중치를 한 번만 읽어 처리 (eval_common/parallel.py,
 ray 없음). 결과는 seed 순 정렬 — workers 수와 무관하게 같다 (추론 시간 제외).
-결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/
+결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>_<run>/
     per_episode.csv  timeseries.csv  summary.csv  summary_table.tex  figures/*.pdf|png|csv  meta.json
 """
 import os
@@ -33,9 +38,16 @@ DEFAULT_CONFIG = os.path.join(ROOT, "rule_evaluation", "config", "rule.yaml")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="rule vs learned Monte-Carlo comparison")
+    ap = argparse.ArgumentParser(description="rule vs learned Monte-Carlo comparison",
+                                 epilog="examples:\n"
+                                        "  python main_rule.py --checkpoint <ckpt>                 # both (rule + learned, paired)\n"
+                                        "  python main_rule.py --run rule --seeds 0-99            # rule only (no checkpoint)\n"
+                                        "  python main_rule.py --run learned --checkpoint <ckpt>  # learned only",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=DEFAULT_CONFIG)
-    ap.add_argument("--checkpoint", default="marl_models/RolePPO/checkpoints/checkpoint_000220")
+    ap.add_argument("--run", default="both", choices=["both", "rule", "learned"],
+                    help="실행 대상: both = 규칙 + 학습 모델 (짝 비교), rule = 규칙만 (체크포인트 불필요), learned = 학습 모델만")
+    ap.add_argument("--checkpoint", default=None, help="학습 체크포인트 (rule.yaml checkpoint 보다 우선, --run both / learned 에 필요)")
     ap.add_argument("--seeds", default=None, help="'0-99' / '0,3,7'")
     ap.add_argument("--mode", default=None, choices=["greedy", "sample"])
     ap.add_argument("--tag", default=None)
@@ -49,6 +61,7 @@ def main():
     from eval_common.parallel import default_workers
     from eval_common.stats import HAS_SCIPY
     from rule_evaluation import compare, plots
+    from training.config_loader import RULE_FILES
 
     with open(os.path.join(_CALLER_CWD, args.config) if not os.path.isabs(args.config) else args.config) as f:
         cfg = yaml.safe_load(f) or {}
@@ -57,8 +70,14 @@ def main():
             cfg[k] = getattr(args, k)
     if args.checkpoint:
         cfg["checkpoint"] = os.path.join(_CALLER_CWD, os.path.expanduser(args.checkpoint))
-    if not cfg.get("checkpoint"):
-        raise SystemExit("체크포인트가 없음 — --checkpoint 또는 rule.yaml checkpoint")
+    run = args.run
+    if run == "rule":
+        cfg["checkpoint"] = None
+    elif not cfg.get("checkpoint"):
+        raise SystemExit(f"--run {run} 에는 학습 체크포인트가 필요합니다 — --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> "
+                         f"(또는 rule.yaml checkpoint). 규칙 정책만 돌리려면 --run rule")
+    elif not os.path.exists(compare._abs(cfg["checkpoint"])):
+        raise SystemExit(f"체크포인트가 없습니다: {cfg['checkpoint']}")
     boot = dict(cfg.get("bootstrap") or {})
     if args.n_boot:
         boot["n"] = args.n_boot
@@ -68,10 +87,13 @@ def main():
     workers = int(cfg.get("workers") or default_workers())
     t0 = time.time()
 
-    out = make_run_dir("rule_evaluation", cfg.get("tag") or "rule_vs_model")
-    print(f"[rule] checkpoint {cfg['checkpoint']}  seeds {cfg['seeds']} ({len(seeds)})  mode {cfg['mode']}  "
+    out = make_run_dir("rule_evaluation", f"{cfg.get('tag') or 'rule_vs_model'}_{run}")
+    print(f"[rule] run {run}  checkpoint {cfg['checkpoint']}  seeds {cfg['seeds']} ({len(seeds)})  mode {cfg['mode']}  "
           f"workers {workers}  -> {os.path.relpath(out, ROOT)}")
-    per, ts, env_cfg, warnings, ckpt = compare.run_parallel(cfg, seeds, workers)
+    per, ts, env_cfg, warnings, ckpt = compare.run_parallel(cfg, seeds, workers, run=run)
+    if run != "both":
+        print(f"[rule] --run {run}: {'규칙 정책' if run == 'rule' else '학습 모델'}만 실행 — 짝 비교 통계 · 비교 그림 "
+              f"(paired scatter, convergence) 은 건너뜀")
     if warnings:
         print(f"[rule] checkpoint 값으로 고정한 키: {'; '.join(warnings)}")
     summary = compare.summarize(per, cfg["metrics"], set(cfg.get("lower_is_better") or []), boot)
@@ -87,15 +109,24 @@ def main():
     if fig_cfg.get("enabled", True) and not args.no_figs:
         figs = plots.make_all(per, summary, tstats, conv, out, fig_cfg)
     write_json(os.path.join(out, "meta.json"), {
-        "script": "main_rule.py", "argv": sys.argv[1:], "config": cfg, "checkpoint": ckpt,
-        "env_config_used": env_cfg, "forced_checkpoint_keys": warnings, "git": git_info(),
+        "script": "main_rule.py", "argv": sys.argv[1:], "run": run, "config": cfg, "checkpoint": ckpt,
+        "env_config_files": [os.path.relpath(f, ROOT) for f in RULE_FILES], "env_config_used": env_cfg,
+        "forced_checkpoint_keys": warnings, "git": git_info(),
         "seeds": seeds, "n_episodes_per_policy": len(seeds), "workers": workers,
         "inference_timing": "CPU, torch 1 thread per worker, model act() wall time / decisions",
         "statistics": f"mean ± 95% bootstrap CI ({boot['n']} resamples, seed {boot['seed']}), n = {len(seeds)} episodes "
-                      f"per policy; paired difference = learned - rule on the same seeds; Wilcoxon signed-rank "
-                      f"{'(scipy)' if HAS_SCIPY else 'skipped (scipy not installed)'}",
+                      f"per policy" + ("; paired difference = learned - rule on the same seeds; Wilcoxon signed-rank "
+                                       f"{'(scipy)' if HAS_SCIPY else 'skipped (scipy not installed)'}" if run == "both" else ""),
         "figures": [os.path.relpath(f, out) for f in figs], "elapsed_s": time.time() - t0})
 
+    if run != "both":
+        p = "rule" if run == "rule" else "model"
+        print(f"\n{'metric':<26}{run:>20}{'95% CI':>26}")
+        for r in summary:
+            print(f"{r['metric']:<26}{r[p + '_mean']:>10.3f} ± {r[p + '_std']:<7.3f}"
+                  f"{'[' + format(r[p + '_ci_lo'], '.3f') + ', ' + format(r[p + '_ci_hi'], '.3f') + ']':>26}")
+        print(f"\n[rule] saved {os.path.relpath(out, ROOT)}  ({time.time() - t0:.0f}s)")
+        return
     print(f"\n{'metric':<26}{'rule':>20}{'learned':>20}{'Δ [95% CI]':>30}{'win/tie/loss':>16}{'d_z [95% CI]':>24}{'p':>8}")
     for r in summary:
         ci = f"{r['diff_mean']:+.3f} [{r['diff_ci_lo']:+.3f}, {r['diff_ci_hi']:+.3f}]"

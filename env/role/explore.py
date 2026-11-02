@@ -10,8 +10,8 @@
 한 step 끝 (지도 갱신 직후) 의 처리 = _explore_after_update():
     A-1 덩어리 생성 (그룹마다 1 회, reachable frontier 만) -> A-2 대응 (유지 / 쪼개짐 1->n / 합쳐짐 n->1 / 소멸)
     -> 추정 담당 갱신 -> UAV 소속 덩어리 이어 붙이기 (쪼개짐 / 합쳐짐은 기록만, 재결정 없음) -> 매 step 구간 rebalance
-       (정책 결정 아님, 소진 / 도달 불가 = Role 이벤트 5) -> 덩어리 슬롯 (크기 내림차순 K_max, 담당 중인 덩어리는 항상 포함)
-    쪼개짐 (1 -> n) : 내 구간 셀이 가장 많이 남은 조각으로 소속 이동 / 합쳐짐 (n -> 1) : 새 덩어리로 / 소멸 : Role 이벤트 5
+       (정책 결정 아님, 소진 / 도달 불가 = Role 이벤트 "4") -> 덩어리 슬롯 (크기 내림차순 K_max, 담당 중인 덩어리는 항상 포함)
+    쪼개짐 (1 -> n) : 내 구간 셀이 가장 많이 남은 조각으로 소속 이동 / 합쳐짐 (n -> 1) : 새 덩어리로 / 소멸 : Role 이벤트 "4"
 2 단계 (결정 시점, RoleSimulation._stage2_all): 이번 step 1 단계로 고른 덩어리 c 의 참여자 P_c = 고른 UAV + 기존 배정자,
     kk = min(|P_c|, kcap) 구간 (k-medoids 초기 medoid = 기존 배정자 각자의 goal 셀에 가장 가까운 frontier 셀).
     참여자는 policies/decision_order.py seg_front 순서로 1:1 마스크 안에서 구간 선택 (기존 배정자는 구간만 = stage-2-only).
@@ -33,18 +33,8 @@ EXPLORE_DEFAULTS = {
     "match_dilate": 1,          # A-2 대응: 이전 덩어리 셀을 이만큼 (Chebyshev) 넓혀 겹침 판정 (frontier 1 칸 후퇴 흡수)
     "track_margin": 2,          # 소속 덩어리가 사라졌을 때 직전 구간에서 r_s + track_margin 안의 새 덩어리로 이어 붙임
     "kmedoids_iters": 10,       # k-medoids 반복 상한
-    "goal_mode": "nearest",     # nearest = 내 구간 frontier 중 BFS 가장 가까운 셀 / medoid = 내 구간 medoid
+    "order_dist_alpha": 1.0,    # 1 단계 차례 점수 (N_m / (n_m + 1)) / (d_jm + 1)^α 의 α (policies/decision_order.py explore_front)
 }
-
-
-def n_seg_slots(n_sub_max):
-    """구간 분할 표의 슬롯 수 P = Σ_{kk=2..M} kk (kk = 구간 수)."""
-    return sum(range(2, int(n_sub_max) + 1))
-
-
-def seg_offset(kk):
-    """구간 수 kk 인 분할이 표에서 시작하는 위치 (kk >= 2)."""
-    return sum(range(2, kk))
 
 
 class ExploreMixin:
@@ -189,10 +179,6 @@ class ExploreMixin:
         cs = blob.cell_set()
         return frozenset().union(*[c & cs for c in self.group_ghosts(g).values()])
 
-    def _ghosts_on(self, g, blob):
-        cs = blob.cell_set()
-        return {j for j, cells in self.group_ghosts(g).items() if cells & cs}
-
     def _relink_and_anchor(self, prev_seg):
         """UAV 소속 덩어리를 이번 step id 로 이어 붙인다 (A-2 대응). 합쳐짐 -> 새 덩어리로 (2 단계 재결정 대상 기록),
         쪼개짐 -> 내 구간이 들어 있는 조각으로 (그룹의 EXPLORE UAV 1 단계 재결정 기록), 소멸 -> 직전 구간 근처 새 덩어리가
@@ -296,7 +282,7 @@ class ExploreMixin:
                 for i in P:
                     if i in got:
                         self._set_segment(i, got[i][0], got[i][1])
-                    else:                                          # |C| < m: 구간 없음 -> no_segment_steps 연속이면 이벤트 5
+                    else:                                          # |C| < m: 구간 없음 -> no_segment_steps 연속이면 이벤트 "4"
                         a = self.agents[i]
                         a.noseg = getattr(a, "noseg", 0) + 1
                         a.cluster, a.cluster_medoid = None, None
@@ -336,35 +322,30 @@ class ExploreMixin:
         a.goal = self._latch_goal(i, a.cluster)
 
     def _latch_goal(self, i, cells):
-        """goal latch (events.goal_latch): 지금 목표 셀은 (관측되어 frontier 가 아님 / 도달 불가 / 내 구간 밖
+        """goal latch: 지금 목표 셀은 (관측되어 frontier 가 아님 / 도달 불가 / 내 구간 밖
         goal_latch_outside_steps step 연속) 일 때만 바꾼다. 바꿀 때는 _segment_goal (내 구간에서 BFS 가장 가까운 셀)."""
         a = self.agents[i]
         cur = a.goal
-        if not self.events_cfg["goal_latch"] or cur is None:
+        if cur is None:
             a.goal_out = 0
-            return self._segment_goal(i, cells, cur, a.cluster_medoid) if cells else None
+            return self._segment_goal(i, cells) if cells else None
         if not (self.knowledge.frontier[i][cur] and self._dist(i, cur) < 10 ** 9):
             a.goal_out = 0
-            return self._segment_goal(i, cells, None, a.cluster_medoid) if cells else None
+            return self._segment_goal(i, cells) if cells else None
         if cur in cells:
             a.goal_out = 0
             return cur
         a.goal_out = getattr(a, "goal_out", 0) + 1
         if a.goal_out >= int(self.events_cfg["goal_latch_outside_steps"]):
             a.goal_out = 0
-            return self._segment_goal(i, cells, None, a.cluster_medoid) if cells else None
+            return self._segment_goal(i, cells) if cells else None
         self.ev_stats["latch_hold"] += 1                           # 구간 경계가 움직였지만 목표 유지
         return cur
 
-    def _segment_goal(self, i, cells, cur=None, med=None):
-        """이동 목표점. goal_mode nearest: 현재 목표점이 아직 내 구간의 frontier 면 유지, 아니면 구간 안에서 BFS 가장
-        가까운 셀 — BFS 동률이면 UAV 위치와 유클리드 거리가 짧은 셀, 그래도 동률이면 (행, 열) 사전순.
-        (예: 오른쪽 같은 행 셀과 오른쪽 위 대각선 셀이 둘 다 BFS 4 면 같은 행 셀.)
-        goal_mode medoid: 구간 medoid (도달 불가면 nearest 규칙)."""
-        if self.explore_cfg["goal_mode"] == "medoid":
-            med = med or self.agents[i].cluster_medoid
-            if med is not None and med in cells and self._dist(i, med) < 10 ** 9:
-                return med
+    def _segment_goal(self, i, cells, cur=None):
+        """이동 목표점: 현재 목표점이 아직 내 구간의 frontier 면 유지, 아니면 구간 안에서 BFS 가장 가까운 셀 — BFS 동률이면
+        UAV 위치와 유클리드 거리가 짧은 셀, 그래도 동률이면 (행, 열) 사전순.
+        (예: 오른쪽 같은 행 셀과 오른쪽 위 대각선 셀이 둘 다 BFS 4 면 같은 행 셀.)"""
         if cur is not None and cur in cells and self.knowledge.frontier[i][cur] and self._dist(i, cur) < 10 ** 9:
             return cur
         pr, pc = self.agents[i].pos
@@ -517,14 +498,6 @@ class ExploreMixin:
                 taken.add(n0)
         return out
 
-    def goal_segment(self, i, segs):
-        """2 단계 현재 플래그: UAV i 의 현재 goal 셀이 든 구간 index (없으면 None — 새로 합류하는 UAV 는 항상 None)."""
-        goal = self.agents[i].goal
-        if goal is None:
-            return None
-        goal = tuple(goal)
-        return next((s_ for s_, (cells, _) in enumerate(segs) if goal in cells), None)
-
     # ================================================================ 그래프 K 노드 / 간선 (env/role/graph_obs.py)
 
     def standing_on(self, g, bid, exclude=None):
@@ -550,16 +523,3 @@ class ExploreMixin:
                     out[a_, b_] = min(1.0, d / self.d_max) if np.isfinite(d) else 1.0
             self._match_cache[key] = out
         return self._match_cache[key]
-
-    def seg_edges(self, g, b, kk):
-        """2 단계 간선: kk 구간 medoid 사이 frontier 측지 거리 / d_max (k-medoids 와 같은 행렬), 끊기면 1. (kk, kk)."""
-        segs = self.segments(g, b, kk)
-        cells = self._blob_cells_for_split(g, b)
-        D = self._geo_cache.get((g, b.id))
-        index = {c: n for n, c in enumerate(cells)}
-        out = np.ones((kk, kk), np.float32)
-        for a_, (_, ma) in enumerate(segs):
-            for b_, (_, mb) in enumerate(segs):
-                d = D[index[ma], index[mb]] if D is not None and ma in index and mb in index else np.inf
-                out[a_, b_] = 0.0 if a_ == b_ else (min(1.0, d / self.d_max) if np.isfinite(d) else 1.0)
-        return out

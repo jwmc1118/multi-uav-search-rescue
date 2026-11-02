@@ -1,4 +1,4 @@
-> **참고:** 이 문서는 이전 3계층(role / task / primitive) 설계 기록이다. 현재 구조(통합 할당 + primitive)는 `README.md` 참고.
+> **참고:** 이 문서는 이전 3계층(role / task / primitive) 설계 기록이다. 현재 구조는 `README.md` 참고.
 
 # Hierarchical Multi-Robot Reinforcement Learning Framework for Search and Rescue
 ## 연구 방향 상세 정리 (working title 기준)

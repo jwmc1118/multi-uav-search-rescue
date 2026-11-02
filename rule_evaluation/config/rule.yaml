@@ -1,19 +1,16 @@
-# main_rule.py 설정 — 규칙 정책 (policies/role_rules.py RuleDecider, 세 head 모두 rule) vs 학습 체크포인트, 같은 seed 몬테카를로 비교
-# 실행: python main_rule.py --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--seeds 0-99] [--mode greedy] [--tag name]
-# 환경 설정 병합 순서: 체크포인트 params.json 의 env_config -> env.files 의 env_config (차례로) -> env.overrides
-#   (관측 shape 를 정하는 키 (eval_common/checkpoint_policy.py SHAPE_KEYS) 는 체크포인트 값으로 고정 — evaluate.py 와 같은 규칙)
-# 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  per_episode.csv, summary.csv, timeseries.csv, summary_table.tex,
-#       figures/*.pdf|png|csv, meta.json (실제 병합 설정 · 체크포인트 · git commit)
+# main_rule.py 설정 — 규칙 정책 (policies/role_rules.py RuleDecider, role · task 모두 rule) vs 학습 체크포인트, 같은 seed 몬테카를로 비교
+# 실행: python main_rule.py [--run both|rule|learned] --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--seeds 0-99] [--mode greedy] [--tag name]
+# 이 파일 = 실행 설정만 (seed, mode, workers, 지표, bootstrap, 그림). 평가 env 조건은 같은 폴더의 env_rule.yaml -> role_rule.yaml ->
+#   task_rule.yaml 을 합친 값 (--run rule / learned / both 모두 같은 env, training/config 와 같은 값으로 유지 — tests/role/test_config.py)
+#   체크포인트는 가중치와 관측 shape 키 (eval_common/checkpoint_policy.py SHAPE_KEYS + cluster.k_max) 에만 쓰고, 다르면 체크포인트 값으로 고정
+# 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>_<run>/  per_episode.csv, summary.csv, timeseries.csv, summary_table.tex,
+#       figures/*.pdf|png|csv, meta.json (평가 env 파일 · 실제 env_config · 고정한 키 · 체크포인트 · git commit)
 
 checkpoint: null                # 학습 체크포인트 (CLI --checkpoint 가 우선). 레포 기준 상대 경로 또는 절대 경로
 seeds: "0-99"                   # 에피소드 seed 목록 ('0-99' / '0,3,7' / '0-4,10') — 두 정책이 같은 seed 로 같은 초기 상태
-mode: greedy                    # 학습 모델 행동 선택: greedy (세 head argmax) | sample (학습 때와 같은 확률 정책)
+mode: greedy                    # 학습 모델 행동 선택: greedy (두 head argmax) | sample (학습 때와 같은 확률 정책)
 tag: rule_vs_model              # 결과 폴더 이름 꼬리
 workers: null                   # 병렬 워커 수 (seed 단위, CPU, torch 스레드 1). null = CPU 코어 수 - 2 (최소 1). CLI --workers
-
-env:
-  files: []                     # 체크포인트 env_config 위에 차례로 덮을 yaml 파일 (그 파일의 env_config), 예: [training/config/env.yaml]
-  overrides: {}                 # 그 위에 마지막으로 덮을 env_config 값, 예: {num_targets: [30, 50]}
 
 metrics:                        # 에피소드 끝 지표 (eval_common/episode.py run_episode_detailed) — 표 / 요약 순서
   - rescue_rate

@@ -16,7 +16,7 @@ import random
 
 import numpy as np
 
-from eval_common.checkpoint_policy import (MODES, check_compatible, is_role_config, load_train_config, load_weights,
+from eval_common.checkpoint_policy import (MODES, is_role_config, load_train_config, load_weights,
                                            read_weights, runtime_env_config)
 
 
@@ -28,7 +28,6 @@ class LightPolicy:
         self.train_cfg = load_train_config(checkpoint_path)
         if not is_role_config(self.train_cfg):
             raise RuntimeError(f"예전 구조 체크포인트는 지원하지 않음: {checkpoint_path}")
-        check_compatible(self.train_cfg, checkpoint_path)
         if (self.train_cfg.get("observation_filter") or "NoFilter") != "NoFilter":
             raise RuntimeError(f"observation_filter={self.train_cfg['observation_filter']!r} — 경량 경로는 NoFilter 만 지원")
         self.train_env = self.train_cfg.get("env_config", {})
@@ -41,8 +40,9 @@ class LightPolicy:
 
     @staticmethod
     def _key(env):
+        from training.config_loader import order_alpha
         return (len(env["agents"]), int(env.get("s_max") or 16), int((env.get("cluster") or {}).get("k_max", 10)),
-                int(env.get("max_targets") or 0))
+                int(env.get("max_targets") or 0), order_alpha(env))
 
     def prepare(self, env_config, free_keys=()):
         """실행 env_config 로 모델 준비 (같은 관측 shape 면 재사용). 반환 실제 env_config. self.warnings = 강제 키."""
@@ -68,6 +68,8 @@ class LightPolicy:
         mc.update(copy.deepcopy(self.train_cfg.get("model") or {}))
         cmc = mc.setdefault("custom_model_config", {})
         cmc["gnn"] = dict(cmc.get("gnn") or {}, s_max=int(env_config.get("s_max") or 16))
+        from training.config_loader import sync_order_alpha
+        sync_order_alpha(env_config, cmc)                  # explore 1 단계 차례 α = env 값
         model = RoleModel(prep.observation_space, env.action_space, 0, mc, "eval_light")
         model.eval()
         skipped = load_weights(model, self.weights)
@@ -95,7 +97,7 @@ class LightPolicy:
         with torch.no_grad():
             self.model({"obs": torch.as_tensor(np.asarray(flat, np.float32)[None])}, [], None)
         a = self.model.last_out["actions"]
-        return {h: a[h][0].cpu().numpy().reshape(-1) for h in ("role", "rescue", "explore")}
+        return {h: a[h][0].cpu().numpy().reshape(-1) for h in ("role", "task")}
 
     def step(self, sim):
         return sim.step_explicit(self.act(sim))

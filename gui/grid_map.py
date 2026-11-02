@@ -23,7 +23,7 @@ Controls
 - while paused: left-drag = obstacles, right-click = add/remove target
 - Change Map : new random obstacle map + targets   Targets : re-place targets only
 - Save/Load : map file   Model : load a trained checkpoint
-- G or Alloc Plots : save allocation analysis figures to results/gui_evaluation/<time>_<policy>_t<step>/ and open the folder
+- G or Assign Plots : save assignment analysis figures to results/gui_evaluation/<time>_<policy>_t<step>/ and open the folder
 - P (B) or Path : BFS 경로   C : 덩어리 · 구간 색칠 (전체 맵)   L : 할당 연결선 · 중복 추적   H : 전체 맵 범례
 - V : 센서 범위 (UAV 색 반투명) · 통신 범위 (UAV 색 점선 사각형) — 선택 UAV 가 있으면 그 UAV 만, 없으면 전체
 
@@ -41,7 +41,7 @@ import subprocess
 import numpy as np
 import pygame
 
-from gui_evaluation.alloc_recorder import AllocRecorder
+from gui_evaluation.assign_recorder import AssignRecorder
 from env.role.simulation import RoleSimulation
 from env.core.modes import Mode
 from env.core.knowledge import frontier_map
@@ -68,8 +68,8 @@ def _open_folder(path):
 def _plot_worker(data, figures_dir, q):
     """별도 프로세스에서 분석 그래프 생성 (GUI 그리기 루프와 GIL 을 다투지 않게). 결과를 큐로 돌려준다."""
     try:
-        from gui_evaluation.alloc_plots import save_alloc_plots
-        q.put(("ok", save_alloc_plots(data, figures_dir)))
+        from gui_evaluation.assign_plots import save_assign_plots
+        q.put(("ok", save_assign_plots(data, figures_dir)))
     except Exception as e:
         q.put(("error", f"{type(e).__name__}: {e}"))
 
@@ -118,7 +118,7 @@ class GridMap:
         self.sim = sim
         obs_panel_width = obs_panel_width or INSPECTOR_WIDTH   # inspector 폭 (local / group 지도가 이 폭에 맞춰 커진다)
         style.set_base_font(font_size)                         # inspector 기준 글자 크기 (main_gui.py GUI_FONT_SIZE)
-        # 임무 할당 분석 (gui_evaluation/alloc_recorder.py · alloc_plots.py): 기록기를 붙이고, Alloc Plots 버튼 / G 키 / 에피소드 끝(옵션)에 그래프 저장
+        # 임무 할당 분석 (gui_evaluation/assign_recorder.py · assign_plots.py): 기록기를 붙이고, Assign Plots 버튼 / G 키 / 에피소드 끝(옵션)에 그래프 저장
         self.figures_dir = figures_dir or os.path.join(REPO_ROOT, "results", "gui_evaluation")
         self.auto_save_plots = auto_save_plots
         self._plot_proc = None
@@ -132,7 +132,7 @@ class GridMap:
         self.show_ranges = True              # V: 전체 맵에 센서 범위 / 통신 범위 (선택 UAV 가 있으면 그 UAV 만)
         self.show_legend = True              # H: 메인 맵 아래 legend 바 (일반 기호, 기본 표시)
         self.use_main, self.use_personal = Usage(), Usage()   # 이번 프레임에 그린 요소 (범례)
-        sim.recorder = AllocRecorder()
+        sim.recorder = AssignRecorder()
         sim.recorder.on_reset(sim)
         self.model_mode = model_mode         # Model 버튼으로 불러올 때 행동 선택 방식 (greedy / sample)
         self.model_config = model_config     # Model 버튼: 체크포인트와 네트워크 구조 비교용 (main 전용 yaml 의 custom_model_config)
@@ -213,7 +213,7 @@ class GridMap:
         y1 = self.content_h + 9
         x = 12
         for label, w in [("Save", 62), ("Load", 62), ("Change Map", 112), ("Targets", 84), ("Reset", 66),
-                         ("Play", 74), ("Step", 62), ("Model", 70), ("Path", 60), ("Alloc Plots", 104)]:
+                         ("Play", 74), ("Step", 62), ("Model", 70), ("Path", 60), ("Assign Plots", 104)]:
             self.buttons[label] = Button((x, y1, w, bh), label, self.f_sm,
                                          toggle=label in ("Play", "Path"))
             x += w + 7
@@ -296,7 +296,7 @@ class GridMap:
             self._set_status(f"episode done @t{info['time']}  "
                              f"rescued {info['rescued_total']} / expired {info['expired_total']}")
             if self.auto_save_plots:
-                self.save_alloc_plots()
+                self.save_assign_plots()
             self.playing = False
             self.buttons["Play"].on = False
             self.buttons["Play"].text = "Play"
@@ -785,7 +785,7 @@ class GridMap:
         pygame.draw.rect(surf, UI["obs"], (self.obs_x, 0, self.obs_w, self.content_h))
         pygame.draw.line(surf, UI["card_border"], (self.obs_x, 0), (self.obs_x, self.content_h))
         geo = self._inspector_geometry()
-        R, W = geo["rects"], geo["W"]
+        R = geo["rects"]
         lc, gc = geo["lc"], geo["gc"]
         self.ins_cell_px = (lc, gc)
         self.ins_layout = {k: R[k].copy() for k in ("local", "segments", "group", "clusters", "groups")}
@@ -1011,16 +1011,19 @@ class GridMap:
     # ==================== role 모드 (env/role/simulation.py) ====================
 
     def _log_events(self, info):
-        """G-8: Role 이벤트 번호 / Explore 전용 이벤트 (쪼개짐 · 합쳐짐) / 덩어리 대응."""
+        """G-8: Role 재결정 원인 (P = 주기, S = start, 1 생존자 증가 / 2 구조 완료 / 3 Return 완료 / 4 목표 무효) /
+        Explore 전용 이벤트 (쪼개짐 · 합쳐짐) / 덩어리 대응."""
         sim = self.sim
         names = {Mode.EXPLORE: "EXPLORE", Mode.RESCUE: "RESCUE", Mode.RETURN: "RETURN"}
+        short = {"periodic": "P"}
         for i, ev in enumerate(sim.last_events):
             if not ev:
                 continue
             a = sim.agents[i]
             goal = f"T{a.assigned_target}" if a.mode is Mode.RESCUE and a.assigned_target is not None else \
                 (f"C{a.blob}" if a.mode is Mode.EXPLORE and a.blob is not None else "--")
-            self.event_log.append(f"t{sim.time - 1:>3} R{i} [{','.join(sorted(ev))}] -> {names[a.mode]} {goal}")
+            causes = ",".join(sorted(short.get(e, e) for e in ev))
+            self.event_log.append(f"t{sim.time - 1:>3} R{i} [{causes}] -> {names[a.mode]} {goal}")
         for line in getattr(sim, "step_log", []):
             self.event_log.append(line.replace("->", "→"))
         if info.get("redecide"):
@@ -1075,23 +1078,23 @@ class GridMap:
             self.overlay_rects.append((ir, path))
             iy += 29
 
-    def save_alloc_plots(self):
+    def save_assign_plots(self):
         """지금까지 기록된 에피소드로 분석 그래프 저장 -> 폴더를 OS 뷰어로 연다.
-        생성은 별도 프로세스 (GUI 는 계속 동작). 끝나면 poll_alloc_plots() 가 상태 메시지 / 폴더 열기를 처리."""
+        생성은 별도 프로세스 (GUI 는 계속 동작). 끝나면 poll_assign_plots() 가 상태 메시지 / 폴더 열기를 처리."""
         if self._plot_proc is not None and self._plot_proc.is_alive():
-            self._set_status("alloc plots: still generating ...")
+            self._set_status("assign plots: still generating ...")
             return
         if self.sim.time == 0:
-            self._set_status("alloc plots: nothing recorded yet (step first)")
+            self._set_status("assign plots: nothing recorded yet (step first)")
             return
         data = self.sim.recorder.snapshot(self.sim)          # 사본: 생성 중에 시뮬레이션이 진행돼도 안전
         ctx = multiprocessing.get_context("spawn")           # pygame / SDL 상태를 물려받지 않도록 spawn
         self._plot_q = ctx.Queue()
         self._plot_proc = ctx.Process(target=_plot_worker, args=(data, self.figures_dir, self._plot_q), daemon=True)
         self._plot_proc.start()
-        self._set_status(f"alloc plots: generating (t={self.sim.time}) ...", frames=10 ** 6)
+        self._set_status(f"assign plots: generating (t={self.sim.time}) ...", frames=10 ** 6)
 
-    def poll_alloc_plots(self):
+    def poll_assign_plots(self):
         """그래프 생성 결과 확인 (매 프레임). 실패해도 GUI 는 계속 동작."""
         if self._plot_q is None:
             return None
@@ -1099,16 +1102,16 @@ class GridMap:
             kind, msg = self._plot_q.get_nowait()
         except queue.Empty:
             if self._plot_proc is not None and not self._plot_proc.is_alive() and self._plot_proc.exitcode:
-                self._set_status(f"alloc plots failed (exit {self._plot_proc.exitcode})", frames=600)
+                self._set_status(f"assign plots failed (exit {self._plot_proc.exitcode})", frames=600)
                 self._plot_q = None
             return None
         self._plot_q = None
         self._plot_proc.join(timeout=1)
         if kind == "ok":
-            self._set_status(f"alloc plots saved: {os.path.relpath(msg, REPO_ROOT)}", frames=600)
+            self._set_status(f"assign plots saved: {os.path.relpath(msg, REPO_ROOT)}", frames=600)
             _open_folder(msg)
         else:
-            self._set_status(f"alloc plots failed: {msg}", frames=600)
+            self._set_status(f"assign plots failed: {msg}", frames=600)
         return kind, msg
 
     def toggle_path(self):
@@ -1176,7 +1179,7 @@ class GridMap:
         if b["Step"].clicked(ev): self.step_once(); return
         if b["Model"].clicked(ev): self.open_overlay("model"); return
         if b["Path"].clicked(ev): self.toggle_path(); return
-        if b["Alloc Plots"].clicked(ev): self.save_alloc_plots(); return
+        if b["Assign Plots"].clicked(ev): self.save_assign_plots(); return
         if b["spd-"].clicked(ev): self.speed_idx = max(0, self.speed_idx - 1); return
         if b["spd+"].clicked(ev): self.speed_idx = min(len(self.speeds) - 1, self.speed_idx + 1); return
         if b["gtmin-"].clicked(ev): self.gt_min -= 10; self._sync_golden_time(); return
@@ -1239,7 +1242,7 @@ class GridMap:
             if ev.key == pygame.K_ESCAPE:
                 self.selected = None; return
             if ev.key == pygame.K_g:
-                self.save_alloc_plots(); return
+                self.save_assign_plots(); return
 
         if not self.playing:
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 3:
@@ -1283,8 +1286,7 @@ class GridMap:
               f"capacity={a.capacity}/{a.capacity_max} assigned={a.assigned_target}")
         print("local_window", a.local_window.shape)
         ob = self.sim.rl_observation()["agents"][self.selected]
-        for k in ("role_self", "role_group", "role_mask", "role_needed", "role_g_res", "role_g_exp",
-                  "explore_cur", "explore_kind"):
+        for k in ("role_self", "role_group", "role_mask", "role_needed", "explore_cur", "mem_valid", "mem_age"):
             print(f"{k:14s}", ob[k])
 
     # ==================== main loop ====================
@@ -1299,7 +1301,7 @@ class GridMap:
                 if self._frame % self.speeds[self.speed_idx] == 0:
                     self.step_once()
 
-            self.poll_alloc_plots()
+            self.poll_assign_plots()
             self.draw_grid()
             self.draw_info_panel()
             self.draw_obs_panel()

@@ -2,10 +2,9 @@
 
     python -m tests.role.test_return_mask
 
- [1] 역할 마스크 = 표 (return_with_cap: true): cap 0 -> RETURN, EXPLORE / 0 < cap < cap_max 이고 부족분 >= return_min_deficit
+ [1] 역할 마스크 = 표: cap 0 -> RETURN, EXPLORE / 0 < cap < cap_max 이고 부족분 >= return_min_deficit
      -> RESCUE, EXPLORE, RETURN / 부족분 < return_min_deficit -> RESCUE, EXPLORE / cap_max -> RESCUE, EXPLORE
- [2] return_with_cap: false -> 기존 마스크 (cap 0 일 때만 RETURN)
- [3] depot 에서 충전 직후 RETURN 막힘 (반복 귀환 없음) + 이벤트 4
+ [2] depot 에서 충전 직후 RETURN 막힘 (반복 귀환 없음) + 이벤트 "3" (Return 완료)
 """
 import numpy as np
 
@@ -30,7 +29,7 @@ def setup(**over):
 
 
 def check_table():
-    sim = setup(role={"return_with_cap": True, "return_min_deficit": 1})
+    sim = setup(role={"return_min_deficit": 1})
     a = sim.agents[0]
     rows = []
     for cap, want in ((0, {"RETURN", "EXPLORE"}), (1, {"RESCUE", "EXPLORE", "RETURN"}), (2, {"RESCUE", "EXPLORE", "RETURN"}),
@@ -39,7 +38,7 @@ def check_table():
         got = roles(sim.role_mask(0))
         assert got == want, (cap, got, want)
         rows.append(f"cap {cap}: {sorted(got)}")
-    sim = setup(role={"return_with_cap": True, "return_min_deficit": 2})
+    sim = setup(role={"return_min_deficit": 2})
     sim.agents[0].capacity = 2                                     # 부족분 1 < 2
     assert roles(sim.role_mask(0)) == {"RESCUE", "EXPLORE"}
     sim.agents[0].capacity = 1                                     # 부족분 2 >= 2
@@ -55,17 +54,6 @@ def check_table():
           "; min_deficit 2: cap 2 -> no RETURN, cap 1 -> RETURN; nothing available -> RETURN fallback")
 
 
-def check_legacy_mask():
-    sim = setup(role={"return_with_cap": False})
-    a = sim.agents[0]
-    got = {}
-    for cap in (0, 1, 3):
-        a.capacity = cap
-        got[cap] = roles(sim.role_mask(0))
-    assert got == {0: {"RETURN", "EXPLORE"}, 1: {"RESCUE", "EXPLORE"}, 3: {"RESCUE", "EXPLORE"}}, got
-    print(f"[2] return_with_cap false -> old mask {{0: RETURN/EXPLORE, 1 and 3: RESCUE/EXPLORE}}")
-
-
 def check_refill():
     sim = setup()
     a = sim.agents[0]
@@ -77,15 +65,14 @@ def check_refill():
     sim._prepare_role()
     assert a.capacity == a.capacity_max
     ev = sim._collect_events(prev, set(), {})
-    assert "4" in ev[0], ev
+    assert "3" in ev[0], ev
     m = sim.role_mask(0)
     assert not m[D], "충전 직후 RETURN 이 열려 있음 (반복 귀환)"
-    print(f"[3] RETURN arrival at depot -> refill to cap_max {a.capacity}, event 4; right after refill mask {sorted(roles(m))} "
+    print(f"[2] RETURN arrival at depot -> refill to cap_max {a.capacity}, event 3; right after refill mask {sorted(roles(m))} "
           f"(RETURN blocked)")
 
 
 if __name__ == "__main__":
     check_table()
-    check_legacy_mask()
     check_refill()
     print("test_return_mask: all ok")

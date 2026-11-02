@@ -1,0 +1,43 @@
+# main_rule.py 평가 env 조건 — 시뮬레이션 실행에 쓰는 env_config 만 (실행 설정은 rule_evaluation/config/rule.yaml).
+# env_rule.yaml -> role_rule.yaml -> task_rule.yaml 순으로 합침. 값은 training/config 와 같게 유지 (tests/role/test_config.py).
+# 학습 전용 (PPO · 병렬 수집 · 네트워크 · 보상) 과 GUI 설정은 뺌 — 보상은 평가 지표 · 행동에 영향 없음
+env_config:
+  # ---- 맵 / 조난자 ----
+  map_mode: random              # random: 매 에피소드 장애물 맵을 새로 생성 / file: map_path 의 고정 맵
+  map_path: maps/map_target/map_20260720_153619.json # 사용할 맵 — map_mode: file 일 때만
+  rows: 40                      # random 맵 크기 (critic state 크기 때문에 학습 중 고정)
+  cols: 60
+  obstacle_ratio: [0.1, 0.3]    # random 맵 장애물 비율
+  min_passage_width: 2          # random 맵 통로 최소 폭 (칸). 2 = 1 칸 틈 / 대각선 끼임 없이 생성, 1 = 제한 없음
+  target_mode: random           # random: 매 에피소드 조난자 수/위치 새로 (depot 에서 도달 가능한 칸만)
+  num_targets: [20, 50]         # 조난자 수 범위 (양끝 포함)
+  target_golden_time: [125, 400]  # 조난자 골든타임 범위 (마감 = 에피소드 시작 기준)
+  max_targets: 50               # critic 조난자 슬롯 수 (전체 조난자). num_targets 최댓값 이상
+  max_episode_len: 400          # 에피소드 최대 길이 t_max. 시간 / 거리 특징의 정규화 분모
+  d_max: null                   # 노드 특징 거리 정규화 분모 (최대 BFS 거리). null = rows + cols = 100 (40 x 60 맵)
+
+  # ---- 관측 ----
+  state_size: 21                # local 창 크기 (홀수) — critic local 입력 / waypoint 창
+  local_channels: [obstacle, agents]   # local 창 채널
+                                # 추가 가능: frontier, explored, target  예) [obstacle, agents, frontier]
+  global_downsample: 1          # critic 중앙 state 축소 배율
+  s_max: 16                     # S (생존자) 노드 수 = 할당 행동의 생존자 슬롯 수 (training/config 는 model.custom_model_config.gnn.s_max)
+  n_hop: 4                      # 통신 hop 수. 그룹(지도 병합 · 순차 디코딩 · 공유 클러스터) 범위
+  memory:                       # 메모리 노드 (env/role/simulation.py _memory_update): UAV 마다 다른 UAV 의 마지막 기록 (위치, 용량,
+                                #   역할, 목표, depot 거리, ω^g, t_last). 매 step 현재 그룹 멤버는 지금 상태로, 그룹 밖 UAV 는 멤버들의
+                                #   기록 중 가장 최근 것을 공유 (중계). 그래프 U 노드 = 현재 그룹 + 그룹 밖 기록 (GNN 입력 전용 —
+                                #   마스크 · 결정 순서 · ω^g · 보상 · 이벤트에는 안 씀, 위치 추정 없음)
+    enabled: true               # false = 현재 그룹만 U 노드
+    T_age: 50                   # 메모리 노드 age = min(1, (t - t_last) / T_age)
+
+  # ---- UAV ----
+  position_mode: depot          # 모든 UAV 가 depot 에서 출발
+  depot: null                   # depot = 모든 UAV 출발 / 재보충 지점, 월드 좌표 (x, y). null = random 맵이면 매 에피소드 랜덤
+                                #   (학습은 null — main_gui.py 는 env_main.yaml 의 고정 depot 을 쓴다)
+  capacity: 3                   # UAV 한 대의 구호품 수. depot 에서 재보충
+  agents:                       # UAV 별 센서 범위와 통신 범위
+    - {sensor_range: 5, comm_range: 10}
+    - {sensor_range: 5, comm_range: 10}
+    - {sensor_range: 5, comm_range: 10}
+    - {sensor_range: 5, comm_range: 10}
+    - {sensor_range: 5, comm_range: 10}

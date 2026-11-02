@@ -1,0 +1,49 @@
+# main_rule.py 평가 env 조건 — 시뮬레이션 실행에 쓰는 env_config 만 (실행 설정은 rule_evaluation/config/rule.yaml).
+# env_rule.yaml -> role_rule.yaml -> task_rule.yaml 순으로 합침. 값은 training/config 와 같게 유지 (tests/role/test_config.py).
+# 학습 전용 (PPO · 병렬 수집 · 네트워크 · 보상) 과 GUI 설정은 뺌 — 보상은 평가 지표 · 행동에 영향 없음
+env_config:
+  # ---- head 별 정책: learned = 학습 / rule = 규칙 정책 (policies/role_rules.py, 그 head 는 loss · critic 에서 제외) ----
+  # ablation (role, task): (rule, rule) = 전부 규칙 (기준선) / (learned, rule) = role 만 학습 / (learned, learned) = 전부 학습
+  policy_mode: {role: learned}    # role head: learned = 학습 / rule = 규칙 (policies/role_rules.py rule_role)
+
+  # ---- 역할 결정 ----
+  role:
+    max_redecide: 1             # 하위 할당 실패(고를 노드 없음) 시 RETURN 으로 대체하는 횟수 상한 (점검용 —
+                                #   역할 마스크가 남은 생존자 / 덩어리를 미리 반영하므로 정상이면 실패 없음)
+    return_min_deficit: 1       # 부분 귀환 (용량이 남아도 RETURN) 허용 최소 부족분 (cap_max - cap). 충전 직후 RETURN 은 자동으로
+                                #   막힘 (반복 귀환 방지). 역할 마스크: cap 0 -> RETURN, EXPLORE / 0 < cap < cap_max 이고
+                                #   부족분 >= return_min_deficit -> RESCUE, EXPLORE, RETURN / 그 외 (cap_max 포함) -> RESCUE, EXPLORE
+                                #   (그룹 belief 발견 수 = N_T 면 EXPLORE 제외, 전부 막히면 RETURN)
+
+  # ---- 그리디 정책 (policies/role_rules.py RuleDecider, run_rules · main rules 모드 · rule 헤드) ----
+  #   role + rescue (주기 · 이벤트 "1", 그룹): 차례 (급한 생존자에 가장 가까운 UAV) 의 담당 후보 생존자 -> RESCUE,
+  #     없으면 EXPLORE (용량 0 RETURN)
+  #   role + rescue (이벤트 "2" / "3" / "4", 한 대): 용량 0 RETURN, 할당 가능 생존자 있음 -> RESCUE (EDF), 없으면 EXPLORE
+  #   explore 1 단계: 담당 후보 덩어리 (아래 1 단계 차례), 담당 후보가 없으면 같은 점수 최대 덩어리.
+  #     2 단계: 참여자 전원 1:1 Hungarian (구간까지 BFS 거리 합 최소, goal 우대 없음)
+
+  # ---- 이벤트 (env/role/simulation.py) ----
+  # Role 재결정 — 대상 UAV 만 역할부터 다시 결정하고 하위 할당 (생존자 / 덩어리 + 구간 / depot) 까지 다시, 나머지는 유지:
+  #   periodic: t % period == 0 (t = 0 포함) 이면 alive UAV 전원 (RETURN · 용량 0 포함). 이벤트와 독립 (시계 리셋 없음)
+  #   "1" 생존자 증가 (그 그룹 전원 — 멤버별 직전 belief 와 비교, 통신 병합으로 알게 된 생존자 포함) / "2" 구조 완료 (그 UAV) /
+  #   "3" Return 완료 (그 UAV) / "4" 목표 무효 (그 UAV)
+  #   ("4" 에는 exploration complete 포함: 그룹 belief 발견 수가 N_T 에 처음 도달하면 그 그룹 EXPLORE UAV 전원.
+  #    이후 그 그룹은 역할 마스크에서 EXPLORE 금지 — 그리디는 할당 가능 생존자 -> RESCUE, 없으면 RETURN)
+  #   목표 유효 (관측 goal_valid): "2" / "3" / "4" 면 꺼짐, periodic · "1" 은 유지 (기존 목표가 관측에 그대로)
+  #   RESCUE 재결정: 자기 현재 목표도 후보 (재결정하지 않는 UAV 가 맡은 생존자만 막음). EXPLORE 재결정: 지금 덩어리도 후보
+  #   같은 생존자 / 덩어리를 다시 고르면 rescue / explore 옵션을 이어감 (새 학습 표본 아님)
+  # 결정 순서 (policies/decision_order.py, 그리디 / 학습 공통, 한 대가 결정할 때마다 남은 대상으로 다시 계산):
+  #   role 차례 = 여유 시간 σ 가 작은 생존자부터 가장 가까운 UAV (닿는 UAV 가 없으면 가까운 생존자 거리 -> 용량 -> 번호),
+  #   RESCUE 를 고르면 바로 생존자 할당 (다음 role 차례는 그 선택을 반영해 다시 계산),
+  #   1 단계 차례 = 남은 UAV x 닿는 덩어리 쌍 중 점수 (N_m / (n_m + 1)) / (d + 1)^α 최대 쌍 (task.yaml explore.order_dist_alpha,
+  #     동률: 큰 덩어리 -> 슬롯 -> 거리 -> 번호, 한 대마다 n 갱신),
+  #   2 단계 = 그 덩어리를 고른 UAV + 기존 배정자를 거리 합 최소 Hungarian 으로 구간 배정 (env, 학습 없음)
+  # 덩어리 쪼개짐 / 합쳐짐은 재결정 없이 소속만 이어 붙인다
+  events:
+    goal_latch_outside_steps: 3 # explore 목표 셀 유지 (goal latch): 관측되어 frontier 가 아님 / 도달 불가 / 내 구간 밖에 이만큼
+                                #   연속일 때만 변경
+    no_segment_steps: 3         # rebalance 후 내 구간이 없는 상태가 이만큼 연속이면 이벤트 "4" (목표 무효)
+    comm_hysteresis: 2          # 통신 링크: 생성 거리 <= R_c, 해제 거리 > R_c + 이 값 (그룹 / belief / 보상 / 특징 공통, 0 = 끔)
+    log_events: true            # 이벤트 / 역할 전환 / 목표 변경 기록 (info event_stats, custom_metrics)
+    log_dir: null               # 에피소드 로그 JSON 폴더 (null = 저장 안 함. run_rules 는 results/rules/event_logs/<tag>)
+    period: 10                  # 주기 재결정 간격 (step, >= 1): t % period == 0 (t = 0 포함) 이면 alive UAV 전원

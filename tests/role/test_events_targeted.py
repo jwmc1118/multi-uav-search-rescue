@@ -1,13 +1,15 @@
-"""이벤트 체계 (Role 이벤트 1~5, 대상 UAV 만 재결정) 시나리오 점검 (ray 불필요) — 빈 맵에 frontier / 생존자 / 통신 연결을 직접 놓고
-env 결정 경로를 호출. (다른 테스트가 쓰는 공용 도우미 Recorder / add_victim / fresh 도 여기)
+"""이벤트 체계 (Role 재결정 원인 periodic / "1"~"4", 대상 UAV 만 재결정) 시나리오 점검 (ray 불필요) — 빈 맵에 frontier /
+생존자 / 통신 연결을 직접 놓고 env 결정 경로를 호출. (다른 테스트가 쓰는 공용 도우미 Recorder / add_victim / fresh 도 여기)
+시나리오 sim (fresh) 은 주기가 사실상 없고 (tests/role/test_explore.py SCENARIO_PERIOD) t = 1 에서 시작 — 원인을 직접 준다.
+주기 · 새 이벤트 "1" 은 tests/role/test_triggers.py.
 
     python -m tests.role.test_events_targeted
 
- [1] 새 생존자 발견 (이벤트 2) -> 그 그룹의 EXPLORE UAV 만 재결정, RESCUE / RETURN UAV 는 역할 · 목표 유지
- [2] 구조 완료 (3) / 귀환 완료 (4) / 목표 무효 (5) -> 해당 UAV 만 재결정
- [3] 이미 알던 생존자가 통신 병합으로 다시 들어와도 이벤트 2 없음 / 그룹 구성이 바뀌어도 재결정 없음
+ [1] 새 생존자 (이벤트 "1") -> 그룹 전원 (역할 무관) 재결정, 이미 맡은 생존자는 후보에서 빠짐
+ [2] 구조 완료 ("2") / 귀환 완료 ("3") / 목표 무효 ("4") -> 해당 UAV 만 재결정
+ [3] 이미 알던 생존자가 통신 병합으로 다른 멤버에게 들어옴 -> 그룹 전원 "1" (ev1_merge) / 그룹 구성이 바뀌어도 재결정 없음
  [4] goal latch: 구간 경계가 1 step 바뀌어도 목표 유지, 목표 셀이 관측되면 변경, 구간 밖 3 step 연속이면 변경
- [5] 구간 없는 상태 (|C| < m) 가 3 step 연속이면 이벤트 5 (그 전에는 없음)
+ [5] 구간 없는 상태 (|C| < m) 가 3 step 연속이면 이벤트 "4" (그 전에는 없음)
  [6] 통신 hysteresis: 거리가 R_c 와 R_c + 1 사이를 오가도 링크가 깜빡이지 않음 (R_c + h 넘으면 해제)
  [7] 같은 step 에 이벤트가 겹쳐도 재결정 1 번, 원인은 모두 기록
 """
@@ -65,9 +67,10 @@ def add_victim(sim, pos, deadline=300, discovered=True):
 
 def fresh(n=3, complete=False, **over):
     """빈 맵 시나리오 sim. 시나리오 생존자는 모두 발견 · 그룹이 앎으로 놓이므로, complete=False (기본) 면 exploration complete
-    판정을 끈다 (EXPLORE 마스크 · 이벤트 5 가 시나리오를 바꾸지 않게). 그 기능 자체는 complete=True 로 점검
+    판정을 끈다 (EXPLORE 마스크 · 이벤트 "4" 가 시나리오를 바꾸지 않게). 그 기능 자체는 complete=True 로 점검
     (tests/role/test_rewards.py check_explore_mask)."""
     sim = blank_sim(n, **over)
+    sim.time = 1                                                  # t = 0 은 주기 재결정 시각 — 시나리오는 그 뒤에서 시작
     sim.targets = []
     sim._known = [set() for _ in range(n)]
     if not complete:
@@ -95,16 +98,15 @@ def check_new_survivor():
     add_victim(sim, (25, 35))                                    # 새 생존자 (그룹 belief 에 처음)
     tick(sim)
     ev = sim._collect_events([x.pos for x in a], set(), {})
-    assert ev == [{"2"}, set(), set()], ev
+    assert ev == [{"1"}] * 3 and sim.ev_stats["ev1_explore"] == 1, ev                   # 그룹 전원 (역할 무관)
     sim.events = ev
     sim._set_decide_order()
-    assert sim.kind == ["role", None, None] and sim.decide_order == [0]
-    rec = Recorder(sim, role={0: Mode.RESCUE.value})
+    assert sim.kind == ["role"] * 3
+    rec = Recorder(sim, role={0: Mode.RESCUE.value, 1: Mode.RESCUE.value, 2: Mode.RETURN.value})
     rec.run()
-    assert rec.calls["role"] == [0] and a[1].assigned_target == t0 and a[2].mode is Mode.RETURN
-    assert a[0].mode is Mode.RESCUE and a[0].assigned_target != t0, "이미 맡은 생존자는 후보에서 빠짐"
-    print("[1] new survivor (event 2) -> only EXPLORE R0 re-decides (took the new victim); RESCUE R1 keeps T0, "
-          "RETURN R2 keeps returning")
+    assert a[0].mode is Mode.RESCUE and a[1].mode is Mode.RESCUE and a[0].assigned_target != a[1].assigned_target, \
+        "같은 이벤트에서 앞 차례가 고른 생존자는 후보에서 빠짐 (1:1)"
+    print("[1] new survivor (event 1): all three re-decide (role-agnostic); R0 / R1 take different victims (1:1)")
 
 
 def check_own_events():
@@ -114,22 +116,22 @@ def check_own_events():
     prev[2] = (sim.depot[0], sim.depot[1] + 1)
     a[2].pos = sim.depot                                         # RETURN 도착
     ev = sim._collect_events(prev, {1}, {0: "exhausted"})        # R1 구조, R0 구간 소진
-    assert ev == [{"5"}, {"3"}, {"4"}], ev
+    assert ev == [{"4"}, {"2"}, {"3"}], ev
     sim.events = ev
     sim._set_decide_order()
     assert sim.kind == ["role", "role", "role"]
     sim, t0 = three_roles()
     sim.targets[t0].expired_at = sim.time                        # R1 목표 만료 -> R1 만
     ev = sim._collect_events([x.pos for x in sim.agents], set(), {})
-    assert ev == [set(), {"5"}, set()], ev
+    assert ev == [set(), {"4"}, set()], ev
     sim.events = ev
     sim._set_decide_order()
     assert sim.kind == [None, "role", None]
-    print("[2] rescued (3) / returned (4) / goal invalid (5) -> only that UAV re-decides "
+    print("[2] rescued (2) / returned (3) / goal invalid (4) -> only that UAV re-decides "
           "(expired target -> R1 only, others untouched)")
 
 
-def check_known_merge_and_group_change():
+def merge_scene():
     sim = fresh(2)
     place(sim, [(14, 3), (14, 36)])
     connect(sim, [[0], [1]])
@@ -139,15 +141,21 @@ def check_known_merge_and_group_change():
     sim._known = [{v}, set()]                                    # R0 만 알던 생존자
     connect(sim)                                                 # 통신 병합 -> R1 도 알게 됨
     tick(sim)
+    return sim
+
+
+def check_known_merge_and_group_change():
+    sim = merge_scene()
     ev = sim._collect_events([x.pos for x in sim.agents], set(), {})
-    assert ev == [set(), set()], f"이미 알던 생존자로 이벤트 2 가 나면 안 됨 {ev}"
+    assert ev == [{"1"}, {"1"}] and sim.ev_stats["ev1_merge"] == 1 and sim.ev_stats["ev1_explore"] == 0, ev
     connect(sim, [[0], [1]])                                     # 그룹 구성 변경만
     tick(sim)
     ev = sim._collect_events([x.pos for x in sim.agents], set(), {})
     sim.events = ev
     sim._set_decide_order()
     assert ev == [set(), set()] and sim.kind == [None, None]
-    print("[3] victim already known by R0 enters R1 by comm merge -> no event 2; group split / merge alone -> no re-decision")
+    print("[3] victim known by R0 enters R1 by comm merge -> event 1 for both (ev1_merge); "
+          "group split / merge alone -> no re-decision")
 
 
 def check_goal_latch():
@@ -180,7 +188,7 @@ def check_no_segment():
     place(sim, [(14, 3), (14, 20), (14, 36)])
     set_front(sim, line(15, 5, 34))
     tick(sim)
-    sim.events = [{"1"}] * 3
+    sim.events = [{"periodic"}] * 3
     sim._set_decide_order()
     Recorder(sim, role={i: Mode.EXPLORE.value for i in range(3)}).run()
     assert len({x.blob for x in sim.agents}) == 1
@@ -192,8 +200,8 @@ def check_no_segment():
         got.append(sorted(i for i, why in ex.items() if why == "no segment"))
     assert got[0] == [] and got[1] == [] and len(got[2]) == 1, got
     ev = sim._collect_events([x.pos for x in sim.agents], set(), ex)
-    assert "5" in ev[got[2][0]]
-    print(f"[5] |C| < m: no segment for R{got[2][0]} -> event 5 only after 3 consecutive steps ({got})")
+    assert "4" in ev[got[2][0]]
+    print(f"[5] |C| < m: no segment for R{got[2][0]} -> event 4 only after 3 consecutive steps ({got})")
 
 
 def check_hysteresis():
@@ -224,14 +232,14 @@ def check_hysteresis():
 
 def check_overlap_once():
     sim, t0 = three_roles()
-    sim.events = [{"2", "5"}, {"3", "5"}, set()]
+    sim.events = [{"1", "4"}, {"2", "4"}, set()]
     n_log = len(sim.ev_log)
     sim._set_decide_order()
     assert sim.decide_order == [0, 1]
     causes = sorted(e["event"] for e in sim.ev_log[n_log:] if e["trigger"] == 1)
     rec = Recorder(sim)
     rec.run()
-    assert sorted(rec.calls["role"]) == [0, 1] and causes == ["3", "5"], (rec.calls, causes)
+    assert sorted(rec.calls["role"]) == [0, 1] and causes == ["2", "4"], (rec.calls, causes)
     print(f"[7] overlapping events -> one re-decision per UAV (role calls {sorted(rec.calls['role'])}), causes logged {causes}")
 
 

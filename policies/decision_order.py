@@ -9,9 +9,11 @@ role_front (B-1)    U = 그룹이 아직 맡지 않은 할당 가능 생존자 (
     생존자를 σ_u = max_{i ∈ D_0} slack_i(u) (= (τ_u - t - min_i d_iu) / T, 이벤트 시작 D_0 기준 고정) 오름차순 -> 생존자 번호,
     가장 급한 생존자부터 '닿는 (그 UAV 슬롯에 있음) 용량 > 0 UAV' 중 (거리, -용량, 번호) 최소가 다음 차례 (담당 후보 = 그 생존자).
     닿는 UAV 가 없으면 (용량 0 여부, U 중 가장 가까운 생존자 거리 (없으면 ∞), -용량, 번호) 최소.
-explore_front (B-3) K = 그룹 덩어리 슬롯 (크기 내림차순), n_k = 배정 수 (기존 + 이번 이벤트 앞 결정)
-    n_k = 0 인 덩어리를 슬롯 순으로, 닿는 (explore_mask) UAV 중 (거리, 번호) 최소가 다음 차례 (담당 후보 = 그 덩어리).
-    n_k = 0 인 덩어리에 닿는 UAV 가 없으면 |C_k| / (n_k + 1) 최대 (같으면 큰 덩어리, 슬롯 순) 덩어리에 가장 가까운 UAV.
+explore_front (B-3) K = 그룹 덩어리 슬롯 (크기 내림차순), n_m = 배정 수 (재결정하지 않는 기존 배정자 + 이번 이벤트 앞 결정)
+    남은 결정 UAV j 와 닿는 (explore_mask) 덩어리 m 의 모든 쌍에 점수 score_jm = (N_m / (n_m + 1)) / (d_jm + 1)^α
+    (N_m = explore_size, d_jm = BFS 칸 수 = 관측 uk_d x d_max, α = env_config.explore.order_dist_alpha).
+    그룹마다 score 최대 쌍 -> 그 UAV 가 다음 차례, 담당 후보 = 그 덩어리 (빈 덩어리 우선 단계 없음). 한 대 결정할 때마다
+    호출부가 n_m 을 갱신해 다시 부른다. 동률: 큰 덩어리 -> 슬롯 순 -> 거리 -> UAV 번호.
 seg_front (B-5)     덩어리마다 참여자 P, 남은 구간을 크기 내림차순 -> 구간 번호, 그 구간에 가장 가까운 참여자 (거리, 번호).
 """
 import torch
@@ -67,9 +69,10 @@ def role_front(group, rem, cap, ids, d, sig, avail):
     return sel_c | sel_f, claim
 
 
-def explore_front(group, rem, emask, d, size, n):
+def explore_front(group, rem, emask, d, size, n, alpha=1.0, dmax=None):
     """반환 (sel (B,N), claim (B,N) 덩어리 슬롯 (없으면 -1)). n / size 는 기준 UAV i (남은 결정 UAV) 의 행을 쓴다
-    (결정 UAV 끼리는 같은 값: 기존 배정자 수 + 이번 이벤트 앞 차례 선택)."""
+    (결정 UAV 끼리는 같은 값: 기존 배정자 수 + 이번 이벤트 앞 차례 선택). d = 관측 uk_d (BFS / d_max), dmax (B,) = 관측 geo[2]
+    -> 칸 수 d x dmax 로 점수의 (d + 1)^α 를 계산."""
     B, N, K = d.shape
     dev = d.device
     idx = torch.arange(N, device=dev, dtype=torch.float32)
@@ -77,12 +80,10 @@ def explore_front(group, rem, emask, d, size, n):
     pair = rem[:, :, None] & emask                                                       # [b,j,k]
     # 기준 행 i 는 남은 결정 UAV 만 (n_assigned 는 자기 자신을 빼고 세므로, 결정하지 않는 기존 배정자의 행은 다르다)
     C = (group & rem[:, :, None])[:, :, :, None] & pair[:, None, :, :]                   # [b,i,j,k]
-    C1 = _lexmin(C & (n[:, :, None, :] == 0), [kk.view(1, 1, 1, K), d[:, None], idx.view(1, 1, N, 1)])
-    has1 = C1.flatten(2).any(-1)
-    score = size / (n + 1)
-    C2 = C & ~has1[:, :, None, None]
-    C2 = _lexmin(C2, [-score[:, :, None, :], -size[:, :, None, :], kk.view(1, 1, 1, K), d[:, None], idx.view(1, 1, N, 1)])
-    C = C1 | C2
+    share = (size / (n + 1))[:, :, None, :]                                              # [b,i,1,k]  N_m / (n_m + 1)
+    cells = d * (dmax.view(B, 1, 1) if dmax is not None else 1.0)                       # BFS 칸 수
+    score = share / (cells[:, None] + 1.0) ** float(alpha)                               # [b,i,j,k]
+    C = _lexmin(C, [-score, -size[:, :, None, :], kk.view(1, 1, 1, K), d[:, None], idx.view(1, 1, N, 1)])
     sel, row = _per_group(C, group, rem)
     claim = torch.where(sel, row.float().argmax(-1), torch.full((B, N), -1, device=dev, dtype=torch.long))
     return sel, claim

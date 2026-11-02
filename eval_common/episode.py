@@ -1,15 +1,11 @@
-"""에피소드 실행 + 지표 계산 공용 함수 — rule_evaluation / scale_evaluation / GUI 평가가 같이 쓴다.
+"""에피소드 실행 + 지표 계산 공용 함수 — main_rule / main_scale (eval_common/parallel.py) · slot_analysis 가 같이 쓴다.
 
-    run_episode(sim, policy, seed)   seed 로 맵 / 조난자 / 골든타임 / 시작 위치를 고정 생성하고 정책 샘플링도 같은 seed 로 고정
-                                     (정책끼리 같은 상황에서 비교). 에피소드 끝 지표 dict.
+    run_episode_detailed(sim, policy, seed)   seed 로 맵 / 조난자 / 골든타임 / 시작 위치를 고정 생성하고 정책 샘플링도 같은
+                                     seed 로 고정 (정책끼리 같은 상황에서 비교). 에피소드 끝 지표 · 시계열 · 초기 상태 지문.
     RulePolicy                       그리디 정책을 CheckpointPolicy 와 같은 인터페이스 (step / seed / set_mode) 로
     parse_seeds('0-99' / '0,3,7')    seed 목록
 """
 import numpy as np
-
-METRICS = ["rescue_rate", "expire_rate", "discover_rate", "explored", "same_cell", "conflict_cross",
-           "escalations", "episode_len"]
-
 
 class RulePolicy:
     """그리디 정책을 CheckpointPolicy 와 같은 인터페이스로 (step / seed / set_mode) — 비교 평가용."""
@@ -41,23 +37,6 @@ def parse_seeds(text):
     return out
 
 
-def run_episode(sim, policy, seed):
-    sim.random_state = np.random.RandomState(seed)   # 맵 / 조난자 / 골든타임 / 시작 위치
-    sim.reset()
-    policy.seed(seed)                                # 정책 샘플링
-    conflict = esc = 0
-    done, info = False, {}
-    while not done:
-        done, info = policy.step(sim)                # 이동은 env 의 BFS 경로 추종
-        conflict += int(info["rescue_conflict_cross"])
-        esc += int(info["redecide"])
-    n_t = max(1, len(sim.targets))
-    return {"rescue_rate": info["rescued_total"] / n_t, "expire_rate": info["expired_total"] / n_t,
-            "discover_rate": info["discovered_total"] / n_t, "explored": info["explored"],
-            "same_cell": info["same_cell_total"], "conflict_cross": conflict, "escalations": esc,
-            "episode_len": info["time"]}
-
-
 # ---------------------------------------------------------------- 상세 실행 (main_rule / main_scale)
 
 def init_signature(sim):
@@ -81,8 +60,8 @@ SLOT_KEYS_K = ("s1_decisions", "trunc_decisions_K", "dropped_K", "dropped_K_cell
 def slot_snapshot(sim):
     """결정 직전 (step 시작 전) UAV 별 S / K 슬롯 잘림. victim_slots / group_clusters 는 직전 step 끝에 만들어지고 결정 중에는
     바뀌지 않으므로 이 시점 값이 결정 때 값과 같다. 반환 [dict] (UAV 순):
-      S  n_alloc        할당 가능 후보 수 (자르기 전 = sim.n_alloc)
-         dropped        잘려서 victim_slots (rescue 행동 / S 노드 앞쪽) 에 못 들어간 후보 수 = max(0, n_alloc - s_max)
+      S  n_assignable        할당 가능 후보 수 (자르기 전 = sim.n_assignable)
+         dropped        잘려서 victim_slots (rescue 행동 / S 노드 앞쪽) 에 못 들어간 후보 수 = max(0, n_assignable - s_max)
          reachable      잘린 후보 중 d <= τ - t (골든타임 안 도달) 인 수 — 후보 조건 (_assignable) 이 같은 조건이라 항상 = dropped
          urgent         잘린 후보 중 slack (τ - t - d) 이 남은 후보의 최소 slack 보다 작은 (더 급한) 수
          best_dropped   전체 후보에서 EDF (rule_rescue 키: 마감 -> BFS -> id) 로 고를 생존자가 잘린 쪽에 있음
@@ -90,11 +69,11 @@ def slot_snapshot(sim):
     from env.core.targets import deadline
     out = []
     for i in range(sim.n_agents):
-        held = sim.held_by_others(i)
+        held = sim.held_by_others(i, exclude=getattr(sim, "slot_exclude", ()))   # env 와 같은 기준 (재결정 UAV 의 목표는 풀림)
         ok = [ti for ti, t in enumerate(sim.targets)
               if t.discovered and sim.knowledge.known_free[i][t.pos] and ti not in held and sim._assignable(i, ti)]
         ok.sort(key=lambda ti: (sim._dist(i, sim.targets[ti].pos), deadline(sim.targets[ti]), ti))
-        assert len(ok) == sim.n_alloc[i] and ok[:sim.s_max] == list(sim.victim_slots[i]), "slot_snapshot != env victim_slots"
+        assert len(ok) == sim.n_assignable[i] and ok[:sim.s_max] == list(sim.victim_slots[i]), "slot_snapshot != env victim_slots"
         kept, cut = ok[:sim.s_max], ok[sim.s_max:]
         slack = {ti: deadline(sim.targets[ti]) - sim.time - sim._dist(i, sim.targets[ti].pos) for ti in ok}
         min_kept = min((slack[ti] for ti in kept), default=None)
@@ -103,7 +82,7 @@ def slot_snapshot(sim):
         blobs = sim.blobs[g] if g < len(getattr(sim, "blobs", [])) else []
         slot_ids = {b.id for b in sim.group_clusters[g]}
         dk = [b for b in blobs if b.id not in slot_ids]
-        out.append({"n_alloc": len(ok), "dropped": len(cut),
+        out.append({"n_assignable": len(ok), "dropped": len(cut),
                     "reachable": sum(1 for ti in cut if 0 <= sim._dist(i, sim.targets[ti].pos) <= deadline(sim.targets[ti]) - sim.time),
                     "urgent": sum(1 for ti in cut if min_kept is not None and slack[ti] < min_kept),
                     "best_dropped": bool(cut) and edf in cut,
@@ -165,7 +144,7 @@ def _assigned_now(sim):
 
 
 def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
-    """run_episode 와 같은 seed 규칙으로 한 에피소드. 반환 (지표 dict, 시계열 [dict] (step 마다), 초기 상태 지문).
+    """한 에피소드 (sim.random_state = RandomState(seed), sim.reset(), policy.seed(seed)). 반환 (지표 dict, 시계열 [dict] (step 마다), 초기 상태 지문).
     추가 지표: rescue_time_mean (구조 완료 시각 평균), golden_slack_mean ((마감 - 구조 시각) / 골든타임 평균, 구조된 조난자),
     rescued_per_uav, decisions (결정 수 = role + rescue + explore 1 단계), infer_ms_per_decision (모델: 결정이 있던 step 의
     추론 시간 합 / 결정 수, CPU 벽시계).

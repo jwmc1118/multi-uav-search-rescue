@@ -1,4 +1,4 @@
-"""(rule, rule, rule) 모드 학습 루프 rollout == rule_evaluation/run_rules.py (default) 결과 점검.
+"""(role, task) = (rule, rule) 모드 학습 루프 rollout == rule_evaluation/run_rules.py (default) 결과 점검.
 
     python -m tests.role.test_role_rule_equiv [episodes]
 
@@ -35,20 +35,20 @@ def trace_rollout(env, prep, policy, seed):
         actions, _, _ = policy.compute_actions(prep.transform(obs)[None], explore=True)
         obs, _, done, info = env.step({k: [int(np.asarray(a)[0]) for a in v] for k, v in actions.items()})
         out.append([(a.pos, a.mode.value, a.goal) for a in env.sim.agents])
-        assert sum(info["role_train"]) + sum(info["rescue_train"]) + sum(info["explore_train"]) == 0
+        assert sum(info["role_train"]) + sum(info["task_train"]) == 0
     return out, (info["rescued_total"], info["expired_total"], env.sim.time)
 
 
 def main(episodes=5):
     register_all()
-    cfg = base_config(mode=("rule", "rule", "rule"))
+    cfg = base_config(mode=("rule", "rule"))
     env, prep, policy = make(cfg)
     for s in range(episodes):
         a, ra = trace_rules(cfg["env_config"], s)
         b, rb = trace_rollout(env, prep, policy, s)
         assert ra == rb and a == b, f"seed {s}: rules {ra} vs rollout {rb}"
         print(f"  seed {s}: identical {len(a)} steps, rescued/expired/len {ra}")
-    print("test_role_rule_equiv: (rule,rule,rule) rollout == run_rules default")
+    print("test_role_rule_equiv: (rule, rule) rollout == run_rules default")
 
 
 if __name__ == "__main__":
