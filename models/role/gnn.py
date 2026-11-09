@@ -1,6 +1,6 @@
 """이종 그래프 GNN (dense 텐서 + 마스크, 그래프 라이브러리 없음 — torch 1.8 / RLlib 1.3 호환). 그래프 사양은 env/role/graph_obs.py.
 
-역할 선택 / task 네트워크가 각자 HeteroGNN 인스턴스를 가진다 (파라미터 공유 없음, 노드 U · S · F 와 관계 구성은 같다).
+역할 선택 / rescue / explore 네트워크가 각자 HeteroGNN 인스턴스를 가진다 (파라미터 공유 없음, 노드 U · S · F 와 관계 구성은 같다).
 
     MLP       g(x) = W2 ReLU(W1 x + b1) + b2   (모든 MLP 2 층)
     encoder   h_v^0 = MLP_type(x_v) (노드 종류마다), e_uv^0 = MLP_edge(x_uv) (간선 종류마다), 차원 D
@@ -8,7 +8,7 @@
       q_v = W_q h_v,  k_uv = W_k [h_u ‖ e_uv],  val_uv = W_v [h_u ‖ e_uv]
       a_v^r = W_o MHA(q_v, {k_uv}, {val_uv})   (adj 마스크로 실제 이웃만, 이웃이 없으면 0)
     노드 갱신   h_v' = LayerNorm(h_v + MLP_upd,type([h_v ‖ a_v^{r1} ‖ a_v^{r2} ‖ ...]))
-    간선 갱신 (edge_update 의 키들, 두 네트워크 모두 U–S · U–F)  e_ij' = LayerNorm(e_ij + MLP([e_ij ‖ h_i ‖ h_j]))   (노드 갱신 뒤)
+    간선 갱신 (edge_update 의 키들, 세 네트워크 모두 U–S · U–F)  e_ij' = LayerNorm(e_ij + MLP([e_ij ‖ h_i ‖ h_j]))   (노드 갱신 뒤)
 패딩 노드는 메시지를 보내지도 받지도 않고 (adj 마스크) 출력도 0. 집계는 이웃 순서에 무관 (순열 불변).
 간선 텐서는 BASE 방향 [a, b] (a 행 · b 열) 로 들고, 관계 src -> dst 의 메시지는 [n_dst, n_src] 가 필요하므로
 (dst, src) != (a, b) 면 전치한다. S–S / F–F / U–U 의 행 = 받는 노드.

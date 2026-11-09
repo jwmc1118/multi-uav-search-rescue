@@ -1,9 +1,10 @@
-"""2-행동 action distribution (Role / task (하위 할당)) — 계층 구조 env (models/role/rllib_model.py 와 약속).
+"""2-행동 action distribution (role / task 행동) — 계층 구조 env (models/role/rllib_model.py 와 약속).
 
 입력 레이아웃: [ role logits N*3 | task N*(T+K) | passthrough role N | task N ]
 행동 공간 Dict{role, task} 은 gym 이 키를 정렬 -> child 분포 순서 = [role | task] x N.
 행동은 모델이 순차 디코딩으로 이미 뽑았으므로 sample / deterministic_sample 은 passthrough 를 돌려준다.
-logp / entropy / kl 은 학습 head {'role', 'task'} -> (B, N) 딕셔너리 (training/role/ppo.py 가 head 별 loss, task 은 역할별 표본).
+logp / entropy / kl 은 행동 {'role', 'task'} -> (B, N) 딕셔너리. task 행동은 rescue 네트워크 (S 칸) 와 explore 네트워크 (F 칸) 가
+나눠 쓰고, training/role/ppo.py 가 네트워크별 표본 마스크로 role / rescue / explore loss 를 따로 만든다.
 결정이 없는 step 의 행동은 dummy — loss 에서 *_train 마스크로 뺀다.
 """
 import torch
@@ -59,7 +60,7 @@ class RoleActionDistribution(TorchMultiActionDistribution):
         return {h: torch.stack([a[h][i].kl(b[h][i]) for i in range(self.n_agents)], dim=-1) for h in HEAD_ORDER}
 
     def logp_taken(self):
-        """passthrough 행동의 헤드별 logp (B, N) — rollout 시 extra_action_out 로 저장."""
+        """passthrough 행동의 행동별 logp (B, N) — rollout 시 extra_action_out 로 저장."""
         return self.logp(self.taken)
 
     @override(TorchMultiActionDistribution)

@@ -5,7 +5,7 @@
       이번 step 결정이 필요 없는 UAV (role_needed = 0) 의 값과, 고른 역할과 무관한 항목은 무시된다.
       순차 디코딩 (그룹 안 앞 차례 선택 -> 뒤 UAV 그래프 갱신 · 마스크) 은 모델이 policies/decision_order.py 로 차례를 정하며 하고
       env 는 같은 함수 · 같은 관측으로 같은 차례를 재현한다.
-보상  스칼라 reward 는 로깅용 합. 헤드별 보상 (reward_role / reward_rescue / reward_explore) 은 info 의 (N,) 배열.
+보상  스칼라 reward 는 로깅용 합. 네트워크별 보상 (reward_role / reward_rescue / reward_explore) 은 info 의 (N,) 배열.
 
 관측 — 이종 그래프 재료 (사양 env/role/graph_obs.py, 모델이 결정 UAV 의 그룹 그래프로 조립), 명세는 tests/role/print_obs_spec.py
 UAV 별 (agents 튜플, 좌표는 절대 정규화 (x / W, y / H), BFS 거리는 / d_max (도달 불가 1))
@@ -28,13 +28,14 @@ UAV 별 (agents 튜플, 좌표는 절대 정규화 (x / W, y / H), BFS 거리는
     team_omega (N,) 그룹 연결도 ω^g = (|U_i| - 1) / (|U| - 1) /
     depot_pos (2,) / geo (3,) [W, H, d_max] / adj (N, N) 현재 통신 링크 / group (N, N) / reach (N, N) /
     time (1,) / state (gh, gw, 6) (+ 목표 지점 채널) / critic_tasks (T, 9) / critic_task_present (T,) / critic_team (N, 12) /
-    critic_global (5,)
+    critic_global (5,) / critic_task_global (3,) [|S \ F| / (N_T - |E \ F|), |F \ (R ∪ E)| / N_T, t / T_max] ([0, 1] 로 자름, task critic 전용 —
+    전역 실제 값, actor 는 읽지 않음)
 """
 import numpy as np
 import gym
 from gym import spaces
 
-from env.role.simulation import RoleSimulation, N_ROLES, ROLE_SELF_DIM, ROLE_GROUP_DIM, TEAM_CTX_DIM, STATE_CHANNELS
+from env.role.simulation import RoleSimulation, N_ROLES, ROLE_SELF_DIM, ROLE_GROUP_DIM, TASK_GLOBAL_DIM, TEAM_CTX_DIM, STATE_CHANNELS
 
 
 class RoleEnv(gym.Env):
@@ -109,6 +110,7 @@ class RoleEnv(gym.Env):
             "critic_task_present": box(0.0, 1.0, (T,)),
             "critic_team": box(-1.0, 1.0, (n, RoleSimulation.CRITIC_TEAM_DIM)),
             "critic_global": box(0.0, 1.0, (RoleSimulation.CRITIC_GLOBAL_DIM,)),
+            "critic_task_global": box(0.0, 1.0, (TASK_GLOBAL_DIM,)),
         })
         self.action_space = spaces.Dict({
             "role": spaces.Tuple(tuple(spaces.Discrete(N_ROLES) for _ in range(n))),
@@ -126,6 +128,5 @@ class RoleEnv(gym.Env):
 
     def step(self, action):
         done, info = self.sim.step_explicit({k: np.asarray(action[k]).reshape(-1) for k in ("role", "task")})
-        scalar = float(np.sum(info["reward_role"]) + np.sum(info["reward_rescue"]) + np.sum(info["reward_explore"])
-                       + np.sum(info.get("reward_rescue_close", 0.0)))
+        scalar = float(np.sum(info["reward_role"]) + np.sum(info["reward_rescue"]) + np.sum(info["reward_explore"]))
         return self.sim.rl_observation(), scalar, done, info

@@ -1,14 +1,12 @@
-"""task 네트워크 · 메모리 노드 · 그래프 특징 · explore 배율 점검 (작은 맵 / 몇 step, ray 학습 불필요).
+"""rescue / explore 네트워크 · 메모리 노드 · 그래프 특징 점검 (작은 맵 / 몇 step, ray 학습 불필요).
 
     python -m tests.role.test_task_memory
 
-[1] 특징: U 노드 12 차원 (이름 순서), 그룹 context 3 차원, S–F 간선 = 생존자마다 가까운 덩어리 kNN (동률 포함) · 차원 3
+[1] 특징: U 노드 12 차원 (이름 순서), 그룹 context 4 차원, S–F 간선 = 생존자마다 가까운 덩어리 kNN (동률 포함) · 차원 3
 [2] 메모리 노드: 두 UAV 가 끊기면 서로 linked 0 · age 증가, 제3 UAV 를 통해 더 최근 기록이 중계되면 t_last 갱신,
     마스크 (역할 / 생존자 / 덩어리) · ω^g 는 메모리 노드와 무관 (memory.enabled 를 꺼도 같음)
-[3] task 네트워크: RESCUE 차례면 F logit 전부 마스크, EXPLORE 차례면 S 전부 마스크, 출력 확률 합 1
-[4] explore 보상: 그룹 연결도 배율 (1 + w_omega ω^g) 은 r_direct 에만 곱해짐 (r_share 는 ω^g 와 무관)
+[3] rescue / explore 네트워크: RESCUE 차례면 F logit 전부 마스크, EXPLORE 차례면 S 전부 마스크, 출력 확률 합 1
 """
-import numpy as np
 import torch
 
 from env.role.graph_obs import CONTEXT_FEATURES, EDGE_FEATURES, FC, FU, U_FEATURES
@@ -47,7 +45,7 @@ def check_features(traces):
     for trace, ob, k, _ in traces:
         for e in trace:
             g = e["graph"]
-            assert g["x"]["U"].shape[-1] == 12 and g["ctx"].shape[-1] == 3 and g["edge"]["SF"].shape[-1] == 3
+            assert g["x"]["U"].shape[-1] == FU and g["ctx"].shape[-1] == FC and g["edge"]["SF"].shape[-1] == 3
             for r, i in enumerate(g["ii"].tolist()):
                 d = torch.as_tensor(ob["agents"][i]["sf_dist"])[None]
                 mS, mF = g["mask"]["S"][r:r + 1], g["mask"]["F"][r:r + 1]
@@ -120,27 +118,6 @@ def check_task_masks(traces):
           f"masked; probabilities sum to 1")
 
 
-def check_explore_mult():
-    sim = fresh(3)
-    n_free = float(sim.n_free_cells())
-    rc = sim.rewards_cfg["explore"]
-    out = {}
-    for om in ([0.0] * 3, [1.0, 0.5, 0.0]):
-        sim.rw = {k: np.zeros(3) for k in sim.rw}
-        sim.explore_cells = lambda: ([2.0, 2.0, 2.0], [3.0, 3.0, 3.0])
-        sim.group_connectivity = lambda om=om: om
-        r = sim.role_rewards([], [], explore_active=[True] * 3)["explore"]
-        for i in range(3):
-            want = ((1 + rc["w_omega"] * om[i]) * 2.0 + rc["w_share"] * 3.0) / n_free
-            assert abs(r[i] - want) < 1e-15, (i, r[i], want)
-            assert abs(sim.rw["explore_share"][i] - rc["w_share"] * 3.0 / n_free) < 1e-15        # 공유 항은 ω^g 무관
-            assert abs(sim.rw["explore_direct"][i] - (1 + rc["w_omega"] * om[i]) * 2.0 / n_free) < 1e-15
-        out[tuple(om)] = sim.last_explore_mult
-    assert out[(0.0, 0.0, 0.0)] == 1.0 and abs(out[(1.0, 0.5, 0.0)] - (1 + rc["w_omega"] * 0.5)) < 1e-12
-    print(f"[4] explore: multiplier (1 + {rc['w_omega']} ω^g) on r_direct only (r_share unchanged); mean multiplier "
-          f"{out[(1.0, 0.5, 0.0)]:.3f} for ω^g (1, 0.5, 0)")
-
-
 if __name__ == "__main__":
     from training.catalog import register_all
     register_all()
@@ -148,5 +125,4 @@ if __name__ == "__main__":
     check_features(tr)
     check_memory()
     check_task_masks(tr)
-    check_explore_mult()
     print("test_task_memory: all ok")

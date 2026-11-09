@@ -1,7 +1,7 @@
 """이론적 상한 / 실패 원인 분석 (학습 코드와 독립).
 
     python rule_evaluation/upper_bound.py --episodes 500
-    python rule_evaluation/upper_bound.py --episodes 200 --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000460
+    python rule_evaluation/upper_bound.py --episodes 200 --checkpoint marl_models/best_model/learn_rule_rule/model_v01
     python rule_evaluation/upper_bound.py --episodes 200 --checkpoint <ckpt> --n_agents 6   # 학습과 다른 UAV 수
 
 목적: 정책의 구조율(≈0.85)이 정책 문제인지, 원리적으로 못 구하는 조난자 때문인지 구분.
@@ -157,10 +157,10 @@ def save_bounds(eps, tgt_rows, tag):
 def run_policy(ckpt, cfg, eps):
     from gui_evaluation.assign_recorder import AssignRecorder
     from env.role.simulation import RoleSimulation
-    from eval_common.checkpoint_policy import CheckpointPolicy
-    policy = CheckpointPolicy(ckpt, env_config=cfg)
+    from eval_common.light_policy import LightPolicy
+    policy = LightPolicy(ckpt, mode="greedy")                 # 조합 (구성요소 모드) 은 모델 경로로 자동 (eval_common/model_loader.py)
+    sim = RoleSimulation(policy.prepare(cfg))
     print(f"  {policy.describe()}")
-    sim = RoleSimulation(policy.env_config)
     sim.recorder = AssignRecorder(policy="model")
     out = []
     for k, e in enumerate(eps):

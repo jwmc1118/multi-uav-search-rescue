@@ -1,28 +1,33 @@
-"""규칙 정책 vs 학습 모델 비교 로직 (main_rule.py) — 같은 seed 몬테카를로.
+"""여러 정책 비교 로직 (main_rule.py) — 같은 seed 몬테카를로, 정책 N 개 + 짝 비교.
 
-    run_parallel(cfg, seeds, workers, run)   seed 단위 병렬 실행 (eval_common/parallel.py, 경량 체크포인트 정책) -> per / ts 행,
-                               실제 env_config, 강제된 키, 체크포인트 경로. 같은 seed 의 초기 상태 지문이 다르면 AssertionError.
-                               run = both (규칙 + 모델) / rule (규칙만, 체크포인트 없이) / learned (모델만)
+    resolve_policies(items)    [{label, path}] -> 정책 정보 (path "rule" = 규칙 정책, 그 외 = eval_common/model_loader.py 로 조합 ·
+                               가중치를 읽어 로드 가능 여부까지 확인 — 실패하면 ValueError). label 중복 금지
+    parse_pairs(pairs, labels) "all" (모든 쌍, 뒤 정책 - 앞 정책) | [[A, B], ...] | "A:B,C:D" -> [(A, B)] (A - B)
+    run_parallel(policies, seeds, workers, mode)   (정책 × seed) 작업을 한 워커 풀에서 병렬 실행 (eval_common/parallel.py,
+                               경량 정책) -> per 행 (policy = label, 정책 · seed 순), step 별 시계열 행, 실제 env_config, 강제된 키.
+                               같은 seed 의 초기 상태 지문 (맵 / depot / 조난자 / 골든타임) 이 정책마다 다르면 AssertionError
     eval_env_config(files)     평가 env = files (기본 rule_evaluation/config 의 env_rule → role_rule → task_rule.yaml) 를 합친 env_config
-    summarize(...)             지표별 정책 평균 ± 표준편차 · 95% bootstrap CI. 두 정책이 다 있으면 짝 차이 (모델 - 규칙) 평균 · CI,
-                               승 / 무 / 패, Wilcoxon p (+ 도달 가능한 최소 p · n 부족 표시, unanimous, 효과 크기 d_z · CI)
-    timeseries_stats(...)      step 별 평균 · CI (누적 지표는 에피소드가 끝난 뒤 마지막 값 유지, 역할 비율은 끝난 뒤 제외)
-    convergence(...)           앞 k 개 에피소드의 구조율 짝 차이 평균 · CI (k = 1..n, 두 정책이 다 있을 때만)
-평가 env (policy_mode 포함) 는 --run 과 무관하게 항상 eval_env_config. 체크포인트는 가중치와 관측 shape 키 (SHAPE_KEYS +
-cluster.k_max, eval_common/checkpoint_policy.py runtime_env_config) 에만 쓰고, 그 키가 다르면 체크포인트 값으로 고정 (경고).
+    summarize(per, labels, ...)    정책 · 지표별 평균, 표준편차, bootstrap 95% CI
+    pairwise(per, pairs, ...)      쌍 · 지표별 seed 차이 (A - B) 평균 · bootstrap CI, win / tie / loss, Wilcoxon p, Holm p
+                                   (같은 지표 안에서 쌍 수만큼 보정), Cohen's d_z (eval_common/stats.py diff_stats · holm)
+    progress_bins(ts, n_bins)      (정책, seed) 별 에피소드 진행률 (step / 에피소드 길이) 구간 값: 누적 발견율 · 구조율 = 구간 끝 값,
+                                   역할 비율 (EXPLORE / RESCUE / RETURN) = 구간 안 step 평균, 동시 추격 = 구간 안 합
+    progress_stats(rows, ...)      정책 · 구간별 seed 평균 + bootstrap 95% CI (fig_compare_cumulative · _roles · _conflict_time)
+평가 env 는 모든 정책에 같다 (구성요소 모드만 정책마다). 모델은 가중치 · 구성요소 모드와 관측 shape 키 (SHAPE_KEYS + cluster.k_max,
+eval_common/checkpoint_policy.py runtime_env_config) 에만 쓰고, 그 키가 평가 env 와 다르면 모델 값으로 고정 — 모델끼리 고정 값이
+다르면 같은 조건으로 비교할 수 없으므로 ValueError. 규칙 정책도 그 고정된 env 로 실행한다.
 """
+import itertools
 import os
 
 import numpy as np
 
-from eval_common.stats import bootstrap_ci, mean_std, paired
+from eval_common.stats import bootstrap_ci, diff_stats, holm, mean_std
 from training.config_loader import RULE_FILES, load_config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-POLICIES = ("rule", "model")
-RUN_POLICIES = {"both": ("rule", "model"), "rule": ("rule",), "learned": ("model",)}   # main_rule --run
-CUMULATIVE = ("cum_rescue_rate", "cum_discover_rate", "explored")
-ROLES = ("role_explore", "role_rescue", "role_return")
+RULE = "rule"
+RULE_LABEL = "rule_rule_rule"
 
 
 def _abs(p):
@@ -34,100 +39,157 @@ def eval_env_config(files=RULE_FILES):
     return load_config(files)["env_config"]
 
 
-def present(per):
-    """per_episode 에 있는 정책 (POLICIES 순)."""
-    have = {r["policy"] for r in per}
-    return tuple(p for p in POLICIES if p in have)
+def resolve_policies(items):
+    """items = [{label (없으면 조합 이름), path}] -> [{label, path (절대 | None = 규칙), combo, describe, model, iteration,
+    checkpoint}]. 모델은 가중치까지 읽어 로드 가능한지 확인한다."""
+    from eval_common.model_loader import load_model, rel
+    out = []
+    for it in items:
+        path = str(it["path"])
+        if path == RULE:
+            info = {"path": None, "combo": RULE_LABEL, "describe": "role rule · rescue rule · explore rule", "model": RULE,
+                    "iteration": None, "checkpoint": None}
+        else:
+            p = _abs(os.path.expanduser(path))
+            if not os.path.exists(p):
+                raise ValueError(f"모델 경로가 없음: {path}")
+            try:
+                spec = load_model(p)
+            except Exception as e:
+                raise ValueError(f"모델을 로드할 수 없음 ({path}): {str(e).splitlines()[0]}") from None
+            info = {"path": p, "combo": spec.combo, "describe": spec.describe(), "model": rel(p), "iteration": spec.iteration,
+                    "checkpoint": rel(spec.checkpoint)}
+        out.append(dict(label=str(it.get("label") or info["combo"]), **info))
+    labels = [p["label"] for p in out]
+    dup = sorted({x for x in labels if labels.count(x) > 1})
+    if dup:
+        raise ValueError(f"정책 label 중복: {dup} — --labels (또는 compare.policies label) 로 구분하세요")
+    return out
 
 
-def run_parallel(cfg, seeds, workers, run="both", env_config=None, free_keys=(), timeseries=True, label="rule"):
-    """반환 (per_episode, timeseries, 실제 env_config, 강제된 키 목록, 체크포인트 경로 (run rule 이면 None)).
-    결과는 seed 순 (workers 수와 무관)."""
-    from eval_common.checkpoint_policy import load_train_config, resolve_checkpoint, runtime_env_config
+def parse_pairs(pairs, labels):
+    """반환 [(A, B)] — 짝 차이 = A - B. "all" = 모든 쌍 (목록 뒤 정책 - 앞 정책)."""
+    if pairs in (None, "all"):
+        return [(labels[j], labels[i]) for i, j in itertools.combinations(range(len(labels)), 2)]
+    if isinstance(pairs, str):
+        pairs = [x.split(":") for x in pairs.split(",") if x.strip()]
+    out = []
+    for pr in pairs:
+        if len(pr) != 2:
+            raise ValueError(f"쌍 형식 오류: {pr} — [A, B] 또는 'A:B'")
+        a, b = (str(x).strip() for x in pr)
+        bad = [x for x in (a, b) if x not in labels]
+        if bad or a == b:
+            raise ValueError(f"쌍 {a}:{b} — 없는 label {bad}" if bad else f"쌍 {a}:{b} — 같은 정책끼리")
+        out.append((a, b))
+    return out
+
+
+def run_parallel(policies, seeds, workers, mode="greedy", env_config=None, label="rule"):
+    """(정책 × seed) 를 한 풀에서 실행. 반환 (per_episode [policy, seed, 지표...], 시계열 [policy, seed, step, 누적 발견 · 구조율,
+    역할 비율], 실제 env_config, 강제된 키 목록).
+    결과는 정책 (목록 순) · seed 순 (workers 수와 무관)."""
+    from eval_common.checkpoint_policy import load_train_config, runtime_env_config
+    from eval_common.model_loader import find_checkpoint
     from eval_common.parallel import Task, run_tasks
-    policies = RUN_POLICIES[run]
-    ckpt = resolve_checkpoint(_abs(cfg["checkpoint"])) if "model" in policies else None   # 규칙만: 체크포인트 없이
-    train_env = load_train_config(ckpt).get("env_config", {}) if ckpt else {}
     env = env_config if env_config is not None else eval_env_config()
     env = dict(env, events=dict(env.get("events") or {}, log_dir=None))
-    used, warnings = runtime_env_config(train_env, env, free_keys) if ckpt else (env, [])
-    res = run_tasks(ckpt, cfg.get("mode", "greedy"),
-                    [Task(None, env, tuple(free_keys), s, timeseries, policies) for s in seeds], workers, label)
+    run_env, warnings = None, []
+    for p in policies:
+        if p["path"]:
+            e, w = runtime_env_config(load_train_config(find_checkpoint(p["path"])).get("env_config", {}), env, ())
+            e = {k: v for k, v in e.items() if k != "components"}
+            if run_env is not None and e != run_env:
+                raise ValueError(f"{p['label']}: 관측 shape 키가 다른 모델과 달라 같은 env 로 비교할 수 없음 ({'; '.join(w)})")
+            run_env = e
+            warnings += [f"{p['label']}: {x}" for x in w]
+    run_env = run_env if run_env is not None else env
+    labels = [p["label"] for p in policies]
+    tasks = [Task(k, run_env, (), s, True, (lab,)) for s in seeds for k, lab in enumerate(labels)]
+    res = run_tasks({p["label"]: p["path"] for p in policies}, mode, tasks, workers, label)
+    for s in seeds:
+        sig = {x.sig for x in res if x.seed == s}
+        assert len(sig) == 1, f"seed {s}: 정책마다 초기 상태가 다름 (맵 / 조난자 / 골든타임)"
+    assert all(x.env_used == res[0].env_used for x in res), "정책마다 실행 env 가 다름"
     per = [r for x in res for r in x.per]
-    per.sort(key=lambda r: (POLICIES.index(r["policy"]), r["seed"]))
     ts = [r for x in res for r in x.ts]
-    ts.sort(key=lambda r: (POLICIES.index(r["policy"]), r["seed"], r["step"]))
-    assert all(x.env_used == res[0].env_used for x in res) and res[0].env_used == used
-    return per, ts, used, warnings, ckpt
+    return per, ts, res[0].env_used, warnings
 
 
-def summarize(per, metrics, lower_is_better, boot):
-    """지표별 요약 행: 정책별 mean / std / ci_lo / ci_hi. 두 정책이 다 있으면 짝 차이 (model - rule) diff / ci,
-    win / tie / loss (모델 기준), p 등."""
-    pols = present(per)
-    by = {p: {r["seed"]: r for r in per if r["policy"] == p} for p in pols}
-    seeds = sorted(set.intersection(*[set(by[p]) for p in pols]))
+def _by(per, label):
+    return {r["seed"]: r for r in per if r["policy"] == label}
+
+
+def summarize(per, labels, metrics, boot):
+    """[{policy, metric, n, mean, std, ci_lo, ci_hi}] (지표 순 → 정책 순)."""
     rows = []
     for m in metrics:
-        row = {"metric": m, "higher_is_better": m not in lower_is_better, "n": len(seeds)}
-        for p in pols:
-            x = np.array([by[p][s][m] for s in seeds], float)
+        for lab in labels:
+            x = np.array([r[m] for r in _by(per, lab).values()], float)
             mu, sd = mean_std(x)
             lo, hi = bootstrap_ci(x, boot["n"], boot["alpha"], boot["seed"])
-            row.update({f"{p}_mean": mu, f"{p}_std": sd, f"{p}_ci_lo": lo, f"{p}_ci_hi": hi})
-        if len(pols) < 2:
-            rows.append(row)
-            continue
-        pr = paired([by["rule"][s][m] for s in seeds], [by["model"][s][m] for s in seeds], boot["n"], boot["alpha"],
-                    boot["seed"], higher_better=m not in lower_is_better)
-        row.update({"diff_mean": pr["diff_mean"], "diff_ci_lo": pr["diff_lo"], "diff_ci_hi": pr["diff_hi"],
-                    "model_win": pr["win"], "tie": pr["tie"], "model_loss": pr["loss"], "p_wilcoxon": pr["p_wilcoxon"],
-                    "n_nonzero": pr["n_eff"], "p_min": pr["p_min"], "p_note": pr["p_note"], "unanimous": pr["unanimous"],
-                    "d_z": pr["d_z"], "d_z_ci_lo": pr["d_z_lo"], "d_z_ci_hi": pr["d_z_hi"]})
-        rows.append(row)
+            rows.append({"policy": lab, "metric": m, "n": int(np.isfinite(x).sum()), "mean": mu, "std": sd, "ci_lo": lo,
+                         "ci_hi": hi})
     return rows
 
 
-def timeseries_stats(ts, boot, max_step=None):
-    """step 별 정책 평균 · CI. 반환 [dict(policy, step, <지표>_mean / _lo / _hi)]."""
+def pairwise(per, pairs, metrics, lower_is_better, boot):
+    """[{pair "A - B", a, b, metric, higher_is_better, n, mean, ci_lo, ci_hi, win, tie, loss, p_wilcoxon, p_holm, d_z}]
+    (지표 순 → 쌍 순). Holm 보정은 같은 지표 안의 쌍끼리."""
+    rows = []
+    for m in metrics:
+        hb = m not in lower_is_better
+        block = []
+        for a, b in pairs:
+            ba, bb = _by(per, a), _by(per, b)
+            seeds = sorted(set(ba) & set(bb))
+            d = [ba[s][m] - bb[s][m] for s in seeds]
+            st = diff_stats(d, boot["n"], boot["alpha"], boot["seed"], higher_better=hb)
+            block.append({"pair": f"{a} - {b}", "a": a, "b": b, "metric": m, "higher_is_better": hb, **st})
+        for r, ph in zip(block, holm([r["p_wilcoxon"] for r in block])):
+            r["p_holm"] = ph
+        rows += block
+    return rows
+
+
+CUMULATIVE = ("cum_discover_rate", "cum_rescue_rate")
+ROLES = ("role_explore", "role_rescue", "role_return")
+SUMS = ("conflict_concurrent",)                    # 구간 안 합 (step 별 발생 수)
+
+
+def progress_bins(ts, n_bins=10):
+    """[{policy, seed, bin, progress (%), cum_*, role_*, conflict_concurrent}] — 구간 k = 진행률 ((k-1)/n, k/n] (에피소드 길이 =
+    마지막 step)."""
+    eps = {}
+    for r in ts:
+        eps.setdefault((r["policy"], r["seed"]), []).append(r)
     out = []
-    T = max_step or max(r["step"] for r in ts)                     # 두 정책 공통 시간 축
-    for p in present(ts):
-        rows = [r for r in ts if r["policy"] == p]
-        seeds = sorted({r["seed"] for r in rows})
-        keys = CUMULATIVE + ROLES
-        arr = {k: np.full((len(seeds), T), np.nan) for k in keys}
-        for si, s in enumerate(seeds):
-            ep = sorted((r for r in rows if r["seed"] == s), key=lambda r: r["step"])
-            for r in ep:
-                if 1 <= r["step"] <= T:
-                    for k in keys:
-                        arr[k][si, r["step"] - 1] = r[k]
-            last = ep[-1]
-            for k in CUMULATIVE:                                 # 끝난 뒤에도 마지막 값 유지
-                arr[k][si, last["step"]:] = last[k]
-        for t in range(T):
-            row = {"policy": p, "step": t + 1}
-            for k in keys:
-                col = arr[k][:, t]
-                col = col[np.isfinite(col)]
-                if len(col) == 0:
-                    continue
-                lo, hi = bootstrap_ci(col, boot["n_timeseries"], boot["alpha"], boot["seed"])
-                row.update({f"{k}_mean": float(col.mean()), f"{k}_lo": lo, f"{k}_hi": hi, f"{k}_n": int(len(col))})
+    for (pol, seed), rows in eps.items():
+        rows.sort(key=lambda r: r["step"])
+        L = rows[-1]["step"]
+        for k in range(1, n_bins + 1):
+            inb = [r for r in rows if (k - 1) * L < r["step"] * n_bins <= k * L]
+            last = inb[-1] if inb else max((r for r in rows if r["step"] * n_bins <= k * L), key=lambda r: r["step"],
+                                           default=rows[0])
+            row = {"policy": pol, "seed": seed, "bin": k, "progress": 100.0 * k / n_bins}
+            row.update({c: last[c] for c in CUMULATIVE})
+            row.update({c: float(np.mean([r[c] for r in inb])) if inb else float("nan") for c in ROLES})
+            row.update({c: int(sum(r[c] for r in inb)) for c in SUMS})
             out.append(row)
     return out
 
 
-def convergence(per, boot, metric="rescue_rate"):
-    """앞 k 개 seed (seed 순서) 의 짝 차이 (model - rule) 평균 · CI, k = 1..n. 한 정책만 있으면 []."""
-    if len(present(per)) < 2:
-        return []
-    by = {p: {r["seed"]: r[metric] for r in per if r["policy"] == p} for p in POLICIES}
-    seeds = sorted(set(by["rule"]) & set(by["model"]))
-    d = np.array([by["model"][s] - by["rule"][s] for s in seeds], float)
+def progress_stats(rows, labels, boot):
+    """[{policy, bin, progress, <키>_mean / _lo / _hi}] (정책 순 → 구간 순), seed 평균 + bootstrap CI."""
     out = []
-    for k in range(1, len(d) + 1):
-        lo, hi = bootstrap_ci(d[:k], boot["n_convergence"], boot["alpha"], boot["seed"])
-        out.append({"episodes": k, "diff_mean": float(d[:k].mean()), "ci_lo": lo, "ci_hi": hi})
+    for lab in labels:
+        mine = [r for r in rows if r["policy"] == lab]
+        for k in sorted({r["bin"] for r in mine}):
+            b = [r for r in mine if r["bin"] == k]
+            row = {"policy": lab, "bin": k, "progress": b[0]["progress"], "n": len(b)}
+            for c in CUMULATIVE + ROLES + SUMS:
+                x = np.array([r[c] for r in b], float)
+                lo, hi = bootstrap_ci(x, boot["n"], boot["alpha"], boot["seed"])
+                row.update({f"{c}_mean": float(np.nanmean(x)), f"{c}_lo": lo, f"{c}_hi": hi})
+            out.append(row)
     return out

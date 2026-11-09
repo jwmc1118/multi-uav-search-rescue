@@ -14,8 +14,9 @@ import os
 import numpy as np
 
 from eval_common import paper_style as ps
+from eval_common.paper_style import LABEL
 from eval_common.io import latex_table
-from rule_evaluation.plots import LABEL, POLICIES, _fmt
+from scale_evaluation.compare import POLICIES
 
 
 def _xpos(ns, n_ref):
@@ -83,7 +84,7 @@ def fig_rates_vs_n(summary, ns, n_ref, out, width, secondary):
 def fig_diff_vs_n(summary, ns, n_ref, out, width, secondary):
     keys = ["rescue_rate", "discover_rate"]
     fig, axes = ps.figure(width, 2.3 if secondary else 2.0, ncols=len(keys))
-    c = ps.POLICY_STYLE["model"]["color"]
+    c = ps.POLICY_STYLE["learned"]["color"]
     data = []
     for ax, m in zip(axes, keys):
         rows = _by(summary, m)
@@ -114,7 +115,7 @@ def fig_inference(infer, summary, ns, n_ref, out, secondary):
     mu = np.array([by[n]["infer_ms_mean"] for n in ns])
     lo = np.array([by[n]["infer_ms_ci_lo"] for n in ns])
     hi = np.array([by[n]["infer_ms_ci_hi"] for n in ns])
-    s = ps.POLICY_STYLE["model"]
+    s = ps.POLICY_STYLE["learned"]
     ax.errorbar(x, mu, yerr=[mu - lo, hi - mu], color=s["color"], marker=s["marker"])
     ax.set_ylabel("Inference time (ms / decision)")
     ax.set_ylim(bottom=0)
@@ -125,19 +126,19 @@ def fig_upper_bound(summary, ns, n_ref, out, width, secondary):
     fig, axes = ps.figure(width, 2.6 if secondary else 2.3, ncols=2)
     ub = _by(summary, "ub_loose")
     x = _axis(axes[0], ns, n_ref, _info(summary), secondary)
-    mu = np.array([ub[n]["rule_mean"] for n in ns])                       # 상한은 정책과 무관 (같은 (seed, N))
-    lo = np.array([ub[n]["rule_ci_lo"] for n in ns])
-    hi = np.array([ub[n]["rule_ci_hi"] for n in ns])
+    mu = np.array([ub[n]["baseline_mean"] for n in ns])                       # 상한은 정책과 무관 (같은 (seed, N))
+    lo = np.array([ub[n]["baseline_ci_lo"] for n in ns])
+    hi = np.array([ub[n]["baseline_ci_hi"] for n in ns])
     axes[0].plot(x, mu, color="k", lw=1.0, marker="^", label=r"$UB_\mathrm{loose}$")
     axes[0].fill_between(x, lo, hi, color="k", alpha=0.12, linewidth=0)
     data = [{"n_agents": n, "metric": "ub_loose", "policy": "-", "mean": a, "ci_lo": b, "ci_hi": c}
             for n, a, b, c in zip(ns, mu, lo, hi)]
     ug = _by(summary, "ub_greedy")
     if ug:                                                                # 전지적 EDF 스케줄 (참고 — UB_loose 가 1 에 붙을 때 유용)
-        mg = np.array([ug[n]["rule_mean"] for n in ns])
+        mg = np.array([ug[n]["baseline_mean"] for n in ns])
         axes[0].plot(x, mg, color="k", lw=0.9, ls=":", marker="v", label=r"$UB_\mathrm{greedy}$")
-        data += [{"n_agents": n, "metric": "ub_greedy", "policy": "-", "mean": a, "ci_lo": ug[n]["rule_ci_lo"],
-                  "ci_hi": ug[n]["rule_ci_hi"]} for n, a in zip(ns, mg)]
+        data += [{"n_agents": n, "metric": "ub_greedy", "policy": "-", "mean": a, "ci_lo": ug[n]["baseline_ci_lo"],
+                  "ci_hi": ug[n]["baseline_ci_hi"]} for n, a in zip(ns, mg)]
     data += _policy_panel(axes[0], summary, "rescue_rate", ns, n_ref, False)
     axes[0].set_ylabel("Rescue rate")
     data += _policy_panel(axes[1], summary, "rescue_over_ub", ns, n_ref, secondary)
@@ -151,16 +152,16 @@ def scale_table(summary, path, n_seeds, metric="rescue_rate"):
     rows = []
     for n in sorted(rows_by):
         r = rows_by[n]
-        cells = {p: f"{_fmt(r[f'{p}_mean'])} $\\pm$ {_fmt(r[f'{p}_std'])}" for p in POLICIES}
-        if r["rule_mean"] != r["model_mean"]:
-            better = ("model" if r["model_mean"] > r["rule_mean"] else "rule") if r["higher_is_better"] else \
-                ("model" if r["model_mean"] < r["rule_mean"] else "rule")
+        cells = {p: f"{ps.fmt(r[f'{p}_mean'])} $\\pm$ {ps.fmt(r[f'{p}_std'])}" for p in POLICIES}
+        if r["baseline_mean"] != r["learned_mean"]:
+            better = ("learned" if r["learned_mean"] > r["baseline_mean"] else "baseline") if r["higher_is_better"] else \
+                ("learned" if r["learned_mean"] < r["baseline_mean"] else "baseline")
             cells[better] = f"\\textbf{{{cells[better]}}}"
-        rows.append([str(n), f"{r['rows']}$\\times${r['cols']}", r["survivors"].replace("–", "--"), cells["rule"],
-                     cells["model"], f"{_fmt(r['diff_mean'])} [{_fmt(r['diff_ci_lo'])}, {_fmt(r['diff_ci_hi'])}]"
+        rows.append([str(n), f"{r['rows']}$\\times${r['cols']}", r["survivors"].replace("–", "--"), cells["baseline"],
+                     cells["learned"], f"{ps.fmt(r['diff_mean'])} [{ps.fmt(r['diff_ci_lo'])}, {ps.fmt(r['diff_ci_hi'])}]"
                      + (r"$^{\ddagger}$" if r.get("unanimous") else ""),
-                     f"{_fmt(r.get('d_z'), 2)} [{_fmt(r.get('d_z_ci_lo'), 2)}, {_fmt(r.get('d_z_ci_hi'), 2)}]",
-                     _fmt(r["p_wilcoxon"]) + (r"$^{\dagger}$" if r.get("p_note") else ""), _fmt(r.get("p_min"), 4)])
+                     f"{ps.fmt(r.get('d_z'), 2)} [{ps.fmt(r.get('d_z_ci_lo'), 2)}, {ps.fmt(r.get('d_z_ci_hi'), 2)}]",
+                     ps.fmt(r["p_wilcoxon"]) + (r"$^{\dagger}$" if r.get("p_note") else ""), ps.fmt(r.get("p_min"), 4)])
     return latex_table(path, header, rows, "rcccccccc",
                        caption=f"{LABEL[metric]} vs.\\ number of UAVs (mean $\\pm$ std over {n_seeds} paired episodes per $N$; "
                                f"$\\Delta$ = learned $-$ rule with 95\\% bootstrap CI; effect size $d_z$ with bootstrap CI; "

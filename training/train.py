@@ -1,33 +1,38 @@
 """학습 엔트리포인트.
 
-    python -m training.train -t 10                  # 계층 구조: training/config/env.yaml + role.yaml + task.yaml, 10M steps
+    python -m training.train -t 10                  # training/config/env.yaml + role.yaml + task.yaml, 10M steps
+    python -m training.train --role learn --role_path marl_models/best_model/learn_rule_rule/model_v01 --rescue learn --explore rule
+    python -m training.train --role learn --rescue rule --explore rule          # role 만 학습
     python -m training.train --smoke                # 1 iteration 만
-    python -m training.train --local --smoke        # 워커 없이 로컬 디버그
-    python training/train.py                                            # 직접 실행 / IDE 실행 버튼 (config 기본값 사용)
-    python -m training.train training/config/env.yaml ... my.yaml       # 뒤 파일이 앞 파일 값을 덮어씀
+    python -m training.train --local --smoke --run_root /tmp/scratch   # 워커 없이, run 폴더를 다른 곳에
 
-학습 구조 = 계층 구조 3 헤드 Role / Rescue / Explore (training/role/ppo.py, config env: rescue_role).
-best 기준 = 고정 seed 평가 (eval.every iteration 마다, run_rules 와 같은 seed, 세 head argmax) 의 구조율 최대,
-          같으면 에피소드 길이가 짧은 쪽 (training/fixed_seed_eval.py, training/callbacks.py).
+학습 구성요소 (env.yaml components, 명령줄 --<role|rescue|explore> / --<...>_path 가 우선) — role / rescue / explore 각각:
+    rule   규칙 정책 (네트워크 호출 · 학습 없음)
+    learn  학습 (rollout 은 샘플링). path 가 있으면 그 모델의 그 구성요소 가중치로 시작 (접두어 strict), 없으면 무작위 초기화
+    시작 검증 (SystemExit): path 가 없는 경로이거나 path 모델에서 그 구성요소가 rule 이거나 구조 불일치, learn 이 하나도 없음,
+    role rule 인데 rescue / explore 가 rule 이 아님 (모델의 rescue / explore 차례는 모델의 role 결정을 따름)
+    조합 이름 (eval_common/model_loader.py combo_name) = <role 모드>_<rescue 모드>_<explore 모드> (learn 에 path 가 있어도 learn)
+    -> run 폴더 marl_models/<조합>_<시각> · best 모델 best_model/<조합>/model_vXX
+best 기준 = 고정 seed 평가 (eval.every iteration 마다, run_rules 와 같은 seed, 모든 네트워크 argmax) 의 구조율 최대,
+          같으면 에피소드 길이가 짧은 쪽 (training/fixed_seed_eval.py, training/callbacks.py). 평가는 학습 중인 모델만 실행하고,
+          기준선 (eval.baselines: 조합 이름별 구조율, 예 rule_rule_rule / learn_rule_rule) 은 config 숫자로 로그 · 그림에만 쓴다.
 
-이어서 학습 (특정 체크포인트 기준):
-    python training/train.py --resume marl_models/RolePPO/checkpoints/checkpoint_000200
-    python training/train.py --resume marl_models/best_model/2026-10-16_20-50-03_role/checkpoint_000180
+이어서 학습: --resume <run>/checkpoints/checkpoint_XXXXXX. run_meta.json 이 있는 run 의 체크포인트면 그 run 폴더에 이어 쓰고
+그 run 의 구성요소 설정을 쓴다 (지금 config 와 다르면 경고, 폴더 이름과 무관 — 옮겨진 run 도 됨). 그 밖의 체크포인트 (run_meta.json
+없음) 는 지금 config 로 새 run 폴더를
+만든다 (기존 폴더는 건드리지 않음).
 
-저장 구조:
-    marl_models/RolePPO/                        새로 학습하면 덮어쓴다 (RolePPO/checkpoints 안의 체크포인트로 이어서 학습하면 유지)
+저장 구조 (새 학습은 항상 새 폴더 — 기존 run 을 지우거나 덮어쓰지 않는다):
+    marl_models/<조합>_<YYYYMMDD_HHMMSS>[_smoke]/   (예: learn_learn_rule_20261104_220048, --run_root 로 바꿈)
+        run_meta.json                           combo, 구성요소별 {mode, path, path_abs, source}, 시작 시각, config 사본
         checkpoints/checkpoint_XXXXXX/          CHECKPOINT_FREQ(10) iteration 마다 저장, 전부 유지
         checkpoints/best/checkpoint_XXXXXX/     eval 기준 best (갱신될 때마다 교체, best_info.json 포함)
-        fig_training_performance / fig_rewards / fig_learning / fig_behavior / fig_undiscovered (.png · .pdf)
-                                                --plot-every iteration 마다 갱신
-        eval_latest.json                        최근 고정 seed 평가의 에피소드 기록 (곡선 · 귀환 시작 용량 · 미발견 생존자)
-        rule_eval.json                          같은 고정 seed 의 규칙 정책 기록 캐시 (한 번 계산, 짝 비교 · 그림 재사용)
+        fig_*.png / .pdf (--plot-every 마다), eval_latest.json,
         progress.csv, result.json, events.out.tfevents.*, params.json
-    marl_models/best_model/<학습 시작 시각>_role/ 이번 학습에서 지금까지 가장 좋은 모델. 학습마다 새 폴더라 덮어쓰지 않는다
-        checkpoint_XXXXXX/, params.json, best_info.json, fig_*.png
+    marl_models/best_model/<조합>/model_vXX/   이번 학습의 best (그 조합 폴더의 다음 빈 버전 번호, 학습마다 새 버전)
+        checkpoint_XXXXXX/, params.json, best_info.json, meta.json (run_meta + run 경로 + iteration + eval rescue), fig_*.png
 체크포인트를 저장할 때마다 바로 디스크에 남으므로 학습이 중간에 멈춰도 그때까지의 체크포인트와 best 모델은 남는다.
-Ctrl+C 로 멈추면 그 시점도 한 번 더 저장한다. --smoke 는 marl_models/RolePPO_smoke/ 에 따로 쓰고 best_model/ 은 만들지 않는다
-(checkpoints/best/ 는 smoke 에도 저장).
+Ctrl+C 로 멈추면 그 시점도 한 번 더 저장한다. --smoke 는 best_model/ 에 승격하지 않는다 (checkpoints/best/ 는 저장).
 """
 import os
 import sys
@@ -53,17 +58,19 @@ from ray.tune.logger import UnifiedLogger
 from training.callbacks import RoleCallbacks
 from training.catalog import register_all
 from eval_common.checkpoint_policy import resolve_checkpoint, restore_or_explain
+from eval_common.model_loader import (COMPONENT_KEYS, MODES, PREFIXES, UnifiedTaskModel, abs_path, components_from_meta,
+                                      combo_name, describe_components, inspect_model, load_model, load_prefixes, rel)
 from training.config_loader import load_config, reward_settings_line
 from training.role.ppo import RolePPOTrainer
 from training.reward_plot import PREV_PROGRESS, read_progress, save_figures
 
-# 이어서 학습할 체크포인트. None = 새로 학습 (RolePPO/ 덮어씀, best_model/ 은 유지)
+# 이어서 학습할 체크포인트. None = 새로 학습 (항상 새 run 폴더)
 # 실행 인자 --resume 을 주면 그쪽이 우선. 예)
-#   RESUME = "marl_models/RolePPO/checkpoints/checkpoint_000200"
+#   RESUME = "marl_models/learn_learn_rule_20261104_220048/checkpoints/checkpoint_000200"
 #   RESUME = "marl_models/best_model/2026-10-16_20-50-03_role/checkpoint_000180"
 RESUME = None
 
-OUT_DIR = os.path.join(ROOT, "marl_models", "RolePPO")
+RUN_ROOT = os.path.join(ROOT, "marl_models")
 BEST_ROOT = os.path.join(ROOT, "marl_models", "best_model")
 CHECKPOINT_FREQ = 10   # iteration
 # Ray object store 크기 (GB). 워커가 보내는 샘플 = 관측 (약 130 KB / step, obs + new_obs 면 2 배) x rollout_fragment_length
@@ -97,6 +104,10 @@ def main():
     ap.add_argument("--resume", "--restore", dest="restore", default=RESUME,
                     help="이 체크포인트에서 이어서 학습 (checkpoint_XXXXXX 폴더 또는 checkpoint-XX 파일)")
     ap.add_argument("--local", action="store_true", help="num_workers=0 로컬 디버그")
+    for k in COMPONENT_KEYS:                               # env.yaml components 보다 우선
+        ap.add_argument(f"--{k}", choices=MODES, default=None, help=f"{k} 구성요소 모드 (env.yaml components.{k}.mode)")
+        ap.add_argument(f"--{k}_path", default=None, help=f"{k} 구성요소 path 모델 (env.yaml components.{k}.path)")
+    ap.add_argument("--run_root", default=RUN_ROOT, help="run 폴더를 만들 곳 (기본 marl_models/)")
     ap.add_argument("--plot-every", type=int, default=10,
                     help="학습 그래프 (fig_training_performance / fig_rewards / fig_learning / fig_behavior / fig_undiscovered) "
                          "저장 주기 (iteration)")
@@ -104,12 +115,16 @@ def main():
 
     config = load_config(args.config)                      # 여러 파일이면 앞에서부터 합침
     print(f"[train] config {', '.join(args.config) if args.config else 'env.yaml + role.yaml + task.yaml'}")
+    yaml_cfg = json.loads(json.dumps(config, default=str))  # run_meta.json 의 config 사본
+    if args.restore:
+        args.restore = resolve_checkpoint(args.restore)   # checkpoint_XXXXXX 폴더 경로도 받는다
+    resume_dir = _run_dir_of(args.restore) if args.restore else None
+    comps = setup_components(config, args, resume_dir)
 
     if config.get("env") != "rescue_role":
         raise SystemExit(f"[train] config env={config.get('env')!r} — 계층 구조 env 'rescue_role' 만 지원")
     print(reward_settings_line(config, "train"))         # 실제 적용 보상 값 (env 기본값 위에 yaml)
     config["callbacks"] = RoleCallbacks          # 에피소드 지표 (custom_metrics). yaml 에는 넣지 않는다
-    config.pop("main", None)                     # main_gui.py 전용 섹션 (*_main.yaml 과 key 구조를 맞추려고 env.yaml 에도 있음) — RLlib 이 모르는 키
     RoleCallbacks.eval_cfg = config.pop("eval", None)   # 고정 seed 평가 설정 (RLlib 이 모르는 키) -> driver 콜백
     config.pop("role_gamma", None)               # role 할인율 γ_r (RLlib 이 모르는 키) — model.custom_model_config.role_gamma 로 들어가 있음
     plot_cfg = config.pop("plot", None) or {}    # 학습 그래프 설정 (RLlib 이 모르는 키)
@@ -135,36 +150,42 @@ def main():
     _ray_init(num_gpus=n_gpus)
     register_all()
 
-    out_dir = OUT_DIR + "_smoke" if args.smoke else OUT_DIR    # 점검 실행이 학습 결과를 지우지 않도록
-    ckpt_dir = os.path.join(out_dir, "checkpoints")
-    best_dir = None if args.smoke else os.path.join(BEST_ROOT, time.strftime("%Y-%m-%d_%H-%M-%S") + "_role")
-
-    # RolePPO/checkpoints 안의 체크포인트로 이어서 학습하면 폴더를 그대로 쓰고, 그 외에는 새로 덮어쓴다.
-    # (best_model/ 은 절대 지우지 않는다)
+    # run 폴더: 새 학습은 항상 새 폴더 (기존 run 을 지우지 않음). run_meta.json 이 있는 run 의 체크포인트로 이어서 학습하면 그 폴더
     if args.restore:
-        args.restore = resolve_checkpoint(args.restore)   # checkpoint_XXXXXX 폴더 경로도 받는다
-        print(f"[train] 이어서 학습: {os.path.relpath(args.restore, ROOT)}")
-    resume_here = bool(args.restore) and os.path.abspath(args.restore).startswith(ckpt_dir + os.sep)
-    if not resume_here and os.path.isdir(out_dir):
-        print(f"[train] 새 학습 -> {os.path.relpath(out_dir, ROOT)} 덮어씀 (best_model/ 은 유지)")
-        shutil.rmtree(out_dir)
+        print(f"[train] 이어서 학습: {rel(args.restore)}")
+    combo = combo_name(comps)                                  # run 폴더 · best_model 하위 폴더 이름
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    out_dir = resume_dir or os.path.join(abs_path(args.run_root), f"{combo}_{stamp}" + ("_smoke" if args.smoke else ""))
+    ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    if resume_here:   # logger 가 progress.csv 를 열기 전에 기존 기록을 옮겨 둔다
+    if resume_dir:    # logger 가 progress.csv 를 열기 전에 기존 기록을 옮겨 둔다
         _archive_progress(out_dir, int(os.path.basename(os.path.dirname(args.restore)).rsplit("_", 1)[1]))
+        with open(os.path.join(out_dir, "run_meta.json")) as f:
+            run_meta = json.load(f)
+    else:
+        run_meta = dict(combo=combo, components=comps, run_dir=rel(out_dir), started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                        resumed_from=rel(args.restore) if args.restore else None, config=yaml_cfg)
+        with open(os.path.join(out_dir, "run_meta.json"), "w") as f:
+            json.dump(run_meta, f, indent=2)
+    print(f"[train] run 폴더: {rel(out_dir)}")
+    best_dir = None if args.smoke else _next_model_dir(combo)
 
     trainer = RolePPOTrainer(config=config, logger_creator=lambda cfg: UnifiedLogger(cfg, out_dir, loggers=None))
     if args.restore:
         restore_or_explain(trainer, args.restore)
+    else:
+        _init_weights(trainer, comps)
 
-    saver = _Saver(trainer, out_dir, ckpt_dir, best_dir)
+    saver = _Saver(trainer, out_dir, ckpt_dir, best_dir, run_meta)
+    learn = [k for k, c in comps.items() if c["mode"] == "learn"]      # [train] 줄의 결정 수 (학습하는 구성요소만)
     stop_steps = int(args.timesteps * 1e6)
     try:
         while True:
             result = trainer.train()
             it = result["training_iteration"]
             cm = result.get("custom_metrics", {})
-            extra = (f"  rescue {cm.get('rescue_rate_mean', float('nan')):.3f}"
-                     f"  role decisions/batch {cm.get('decisions_per_batch_role', float('nan')):.0f}")
+            extra = f"  rescue {cm.get('rescue_rate_mean', float('nan')):.3f}" + "".join(
+                f"  {h} decisions/batch {cm.get(f'decisions_per_batch_{h}', float('nan')):.0f}" for h in learn)
             print(f"[train] iter {it}  steps {result['timesteps_total']:,}  "
                   f"reward {result['episode_reward_mean']:.3f}  len {result['episode_len_mean']:.1f}{extra}  "
                   f"({result['time_this_iter_s']:.1f}s)")
@@ -172,21 +193,121 @@ def main():
                 saver.eval_best(result, cm)
             done = (args.smoke and it >= args.smoke_iters) or result["timesteps_total"] >= stop_steps
             if it % args.plot_every == 0 or done:
-                save_figures(out_dir, baseline=ev.get("greedy_baseline"), ema_window=plot_cfg.get("ema_window", 10),
-                             eval_seeds=int(ev.get("n_seeds", 20)))
+                save_figures(out_dir, baselines=ev.get("baselines"), ema_window=plot_cfg.get("ema_window", 10))
             if it % CHECKPOINT_FREQ == 0 or done:
                 saver.save(result)
             if done:
                 break
     except KeyboardInterrupt:
         print("\n[train] 중단 — 현재 상태를 저장합니다")
-        save_figures(out_dir, baseline=ev.get("greedy_baseline"), ema_window=plot_cfg.get("ema_window", 10),
-                     eval_seeds=int(ev.get("n_seeds", 20)))
+        save_figures(out_dir, baselines=ev.get("baselines"), ema_window=plot_cfg.get("ema_window", 10))
         if trainer.iteration > saver.last_saved_iter:
             saver.save(_last_result(out_dir))
     finally:
         trainer.stop()   # logger flush / 워커 종료
         ray.shutdown()
+
+
+def _read_components(config, args):
+    """config components (RLlib 이 모르는 키 — config 에서 뺀다) + 명령줄 --<k> / --<k>_path -> {구성요소: {mode, path}}."""
+    raw = config.pop("components", None) or {}
+    out = {}
+    for k in COMPONENT_KEYS:
+        c = dict(raw.get(k) or {})
+        mode = getattr(args, k) or c.get("mode")
+        path = getattr(args, f"{k}_path") if getattr(args, f"{k}_path") is not None else c.get("path")
+        if mode not in MODES:
+            raise SystemExit(f"[train] components.{k}.mode {mode!r} — {MODES}")
+        out[k] = {"mode": mode, "path": path or None}
+    return out
+
+
+def check_components(comps):
+    """시작 검증 (SystemExit) -> run_meta 의 구성요소 {mode, path (레포 상대), path_abs, source (path 모델의 그 구성요소 모드)}."""
+    modes = {k: c["mode"] for k, c in comps.items()}
+    if "learn" not in modes.values():
+        raise SystemExit(f"[train] components: learn 인 구성요소가 없습니다 ({describe_components(comps)}) — 하나 이상 learn 으로")
+    if modes["role"] == "rule" and (modes["rescue"] != "rule" or modes["explore"] != "rule"):
+        raise SystemExit("[train] components: role rule 이면 rescue / explore 도 rule 이어야 합니다 (모델의 rescue / explore 차례는 "
+                         "모델의 role 결정을 따름) — role 을 learn 으로")
+    out = {}
+    for k, c in comps.items():
+        e = {"mode": c["mode"], "path": None, "path_abs": None, "source": None}
+        if c["path"] and c["mode"] == "learn":
+            p = abs_path(c["path"])
+            if not os.path.exists(p):
+                raise SystemExit(f"[train] components.{k}: path {c['path']} 가 없습니다")
+            try:
+                spec = inspect_model(p, use=(k,))
+            except (UnifiedTaskModel, FileNotFoundError, ValueError) as err:
+                raise SystemExit(f"[train] components.{k}: path {c['path']} 를 쓸 수 없음 — {err}")
+            if spec.modes[k] == "rule":
+                raise SystemExit(f"[train] components.{k}: path {c['path']} 모델의 {k} 는 rule ({spec.describe()}) — 가중치가 없습니다")
+            e.update(path=rel(p), path_abs=p, source={"component": k, "mode": spec.modes[k], "model": spec.describe()})
+        out[k] = e
+    return out
+
+
+def setup_components(config, args, resume_dir=None):
+    """구성요소 설정을 정해 env_config.components · 모델 옵션 (custom_model_config.components) 에 넣는다. resume_dir (run_meta.json 이
+    있는 run 을 이어 학습) 면 그 run 의 설정을 쓰고 지금 config 와 다르면 경고. 반환 run_meta 의 components."""
+    now = _read_components(config, args)
+    if resume_dir:
+        with open(os.path.join(resume_dir, "run_meta.json")) as f:
+            run = json.load(f)
+        base, saved = components_from_meta(run), run.get("components") or {}
+        comps = {}
+        for k in COMPONENT_KEYS:
+            r, p = saved.get(k) if isinstance(saved.get(k), dict) else {}, base[k]["path"]
+            comps[k] = {"mode": base[k]["mode"], "path": p, "path_abs": r.get("path_abs") or (abs_path(p) if p else None),
+                        "source": r.get("source")}
+        diff = [k for k in COMPONENT_KEYS if (now[k]["mode"], now[k]["path"]) != (comps[k]["mode"], comps[k]["path"])]
+        if diff:
+            print(f"[warn] 이어서 학습: run 의 구성요소 설정 ({describe_components(comps)}) 이 지금 config "
+                  f"({describe_components(now)}) 와 다름 ({', '.join(diff)}) — run 의 설정을 씁니다")
+    else:
+        comps = check_components(now)
+    modes = {k: c["mode"] for k, c in comps.items()}
+    config["env_config"]["components"] = modes
+    config.setdefault("model", {}).setdefault("custom_model_config", {})["components"] = modes
+    print(f"[train] components: {describe_components(comps)}")
+    return comps
+
+
+def _init_weights(trainer, comps):
+    """새 학습 시작 가중치: path 가 있는 learn 구성요소마다 그 모델의 그 구성요소 부분 (접두어, strict). 로컬 policy 에 싣고
+    rollout 워커에 동기화."""
+    model = trainer.get_policy().model
+    loaded = []
+    for k, c in comps.items():
+        if not c.get("path_abs") or c["mode"] != "learn":
+            continue
+        spec = load_model(c["path_abs"], use=(k,))
+        try:
+            loaded += load_prefixes(model, spec.weights, PREFIXES[k], f"components.{k} path {c['path']}")
+        except RuntimeError as err:
+            raise SystemExit(f"[train] components.{k}: path {c['path']} 구조 불일치 — {err}")
+        print(f"[train] {k}: {c['path']} 의 {k} 가중치로 시작")
+    if loaded:
+        trainer.workers.sync_weights()
+        print(f"[train] 시작 가중치 {len(loaded)} 개 로드")
+
+
+def _run_dir_of(checkpoint):
+    """체크포인트가 run_meta.json 이 있는 run (<run>/checkpoints/[best/]checkpoint_X/checkpoint-X) 의 것이면 그 run 폴더."""
+    d = os.path.dirname(os.path.abspath(checkpoint))
+    for _ in range(4):
+        if os.path.isfile(os.path.join(d, "run_meta.json")) and os.path.isdir(os.path.join(d, "checkpoints")):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def _next_model_dir(combo):
+    """best_model/<조합>/model_vXX — 다음 빈 버전 (폴더는 첫 best 저장 때 만든다)."""
+    base = os.path.join(BEST_ROOT, combo)
+    nums = [int(n[7:]) for n in (os.listdir(base) if os.path.isdir(base) else []) if n.startswith("model_v") and n[7:].isdigit()]
+    return os.path.join(base, f"model_v{max(nums, default=0) + 1:02d}")
 
 
 def _last_result(out_dir):
@@ -213,10 +334,12 @@ def _archive_progress(out_dir, iteration):
 
 
 class _Saver:
-    """체크포인트 저장 (지우지 않고 전부 유지) + eval 기준 best 를 checkpoints/best/ 에 저장 (best_model/<시각>/ 에도 복사)."""
+    """체크포인트 저장 (지우지 않고 전부 유지) + eval 기준 best 를 checkpoints/best/ 에 저장
+    (best_model/<조합>/model_vXX/ 에도 복사 + meta.json)."""
 
-    def __init__(self, trainer, out_dir, ckpt_dir, best_dir):
+    def __init__(self, trainer, out_dir, ckpt_dir, best_dir, run_meta):
         self.trainer, self.out_dir, self.ckpt_dir, self.best_dir = trainer, out_dir, ckpt_dir, best_dir
+        self.run_meta = run_meta
         self.best_key = None                                  # (eval 구조율, -에피소드 길이) — 클수록 좋음
         self.last_saved_iter = trainer.iteration
         info = os.path.join(ckpt_dir, "best", "best_info.json")
@@ -256,7 +379,7 @@ class _Saver:
             self._update_best(src, info)
 
     def _update_best(self, src, info):
-        """best_model/<시각>/ 에 복사: 새 best 를 먼저 복사한 뒤 예전 best 를 지운다."""
+        """best_model/<조합>/model_vXX/ 에 복사 (+ meta.json): 새 best 를 먼저 복사한 뒤 예전 best 를 지운다."""
         os.makedirs(self.best_dir, exist_ok=True)
         old = glob.glob(os.path.join(self.best_dir, "checkpoint_*"))
         dst = os.path.join(self.best_dir, os.path.basename(src))
@@ -272,6 +395,10 @@ class _Saver:
                 shutil.copy2(os.path.join(self.out_dir, fn), self.best_dir)
         with open(os.path.join(self.best_dir, "best_info.json"), "w") as f:
             json.dump(info, f, indent=2)
+        meta = dict(self.run_meta, source_run=rel(self.out_dir), checkpoint=info["checkpoint"],
+                    iteration=info["training_iteration"], eval_rescue_rate=info["eval_rescue_rate"])
+        with open(os.path.join(self.best_dir, "meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
 
 
 if __name__ == "__main__":

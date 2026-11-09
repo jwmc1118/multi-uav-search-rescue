@@ -48,6 +48,7 @@ class ExploreMixin:
         self.blob_events = []                                 # 이번 step 덩어리 대응 결과 (split / merge 문장)
         self._split_groups = set()                            # 이번 step 담당 덩어리가 쪼개진 그룹
         self._merged = set()                                  # 이번 step 담당 덩어리가 합쳐진 (그룹, 새 덩어리 id)
+        self.blob_root = {}                                   # 쪼개진 덩어리 id -> 처음 덩어리 id (task 목표 전환 판정: 같은 계열)
         self.stats = {"s1": 0, "s2": 0, "reselect": 0, "split": 0, "merge": 0, "ghost_drop": 0, "seg_life": [], "role_switch": 0}
         for a in self.agents:
             a.blob = None
@@ -58,6 +59,10 @@ class ExploreMixin:
     def _new_blob_id(self):
         self.blob_seq += 1
         return self.blob_seq
+
+    def root_blob(self, bid):
+        """덩어리 계열 id: 쪼개져 나온 덩어리는 처음 덩어리의 id (합쳐진 덩어리 · 새 덩어리는 자기 id)."""
+        return self.blob_root.get(bid, bid)
 
     # ================================================================ A-1 / A-2
 
@@ -125,6 +130,7 @@ class ExploreMixin:
                 ids = []
                 for qi in qs:
                     new[qi].id, new[qi].origin, new[qi].parents = self._new_blob_id(), "split", (p,)
+                    self.blob_root[new[qi].id] = self.root_blob(p)
                     ids.append(new[qi].id)
                 self._split_of[(g, p)] = ids
                 self.blob_events.append(f"C{p} -> " + ", ".join(f"C{k}" for k in ids))
@@ -137,6 +143,7 @@ class ExploreMixin:
             else:                                                        # n -> m: 쪼개짐으로 처리 (1 단계부터)
                 for qi in qs:
                     new[qi].id, new[qi].origin, new[qi].parents = self._new_blob_id(), "split", tuple(sorted(links[qi]))
+                    self.blob_root[new[qi].id] = self.root_blob(min(links[qi]))
                     for p in links[qi]:
                         self._split_of.setdefault((g, p), []).append(new[qi].id)
 

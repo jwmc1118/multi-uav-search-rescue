@@ -1,6 +1,6 @@
-"""계층 구조 env 관측 명세 출력 — 관측 키 / shape, 행동 공간, 그리고 두 네트워크 (역할 선택 / task (하위 할당)) 가 보는 이종 그래프
+"""계층 구조 env 관측 명세 출력 — 관측 키 / shape, 행동 공간, 그리고 세 네트워크 (역할 선택 / rescue / explore) 가 보는 이종 그래프
 (노드 U / S / F, 간선 U–U / U–S / U–F / S–S / F–F / S–F, 그룹 context) 특징의 이름 · 값 범위 (사양 env/role/graph_obs.py).
-결정 그래프 종류: role = 역할 선택, rescue = task (하위 할당) (RESCUE), s1 = task (하위 할당) (EXPLORE 1 단계).
+결정 그래프 종류: role = 역할 선택 네트워크, rescue = rescue 네트워크, s1 = explore 네트워크 (1 단계). 세 그래프는 같은 구성.
 
     python -m tests.role.print_obs_spec [seed] [steps]
 
@@ -77,7 +77,7 @@ def main(seed=0, steps=120):
     print(f"정규화: 좌표 (x / W, y / H), 거리 BFS / d_max (d_max = {sim.d_max:.0f}), U–U 거리 / R_c (상한 4), "
           f"시간 / T (T = {sim.cfg['max_episode_len']}), 크기 = min(1, log(1+n) / log(1+{sim.explore_cfg['size_ref']})), 배정 수 / N (N = {sim.n_agents})")
     print(f"그래프 크기: U = N {sim.n_agents} (연결 + 메모리 노드), S = s_max {sim.s_max}, F = k_max {sim.k_max}.  "
-          f"결정 그래프 수 {n_graph} (role = 역할 선택, rescue / s1 = task (하위 할당) RESCUE / EXPLORE)")
+          f"결정 그래프 수 {n_graph} (role = 역할 선택, rescue = rescue 네트워크, s1 = explore 네트워크)")
     print("== per-agent keys ==")
     for k, sp in ag.items():
         print(f"  {k:<18} {str(sp.shape):<14}")
@@ -89,8 +89,8 @@ def main(seed=0, steps=120):
     for k, sp in env.action_space.spaces.items():
         print(f"  {k:<12} N x Discrete({sp.spaces[0].n})")
     names = {"U": U_FEATURES, "S": S_FEATURES, "F": F_FEATURES}
-    for st, title in (("role", "역할 선택 (U · S · F)"), ("rescue", "task (하위 할당) — RESCUE (U · S · F)"),
-                      ("s1", "task (하위 할당) — EXPLORE 1 단계 (U · S · F)")):
+    for st, title in (("role", "역할 선택 (U · S · F)"), ("rescue", "rescue 네트워크 (U · S · F)"),
+                      ("s1", "explore 네트워크 — 1 단계 (U · S · F)")):
         print(f"\n######## {title} ########")
         for t in ("U", "S", "F"):
             if f"{st}:{t}" in vals:

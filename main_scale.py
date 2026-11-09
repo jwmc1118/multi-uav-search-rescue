@@ -1,6 +1,6 @@
 """확장성 평가: UAV 수 N 과 함께 조난자 수 · 맵 크기 · 시간을 키워가며 규칙 정책 vs 학습 모델 (GUI 없음, 결과 파일만 저장).
 
-    python main_scale.py --checkpoint marl_models/RolePPO/checkpoints/checkpoint_000200
+    python main_scale.py --checkpoint marl_models/best_model/learn_learn_rule/model_v01    # best 모델 폴더 또는 학습 체크포인트
     python main_scale.py --checkpoint <ckpt> --n 2,4,8 --seeds 0-9 --tag quick
     python main_scale.py --checkpoint <ckpt> --preset fixed          # UAV 수만 바꿈
     python main_scale.py --checkpoint <ckpt> --workers 8             # (N, seed) 단위 병렬 (기본 = CPU 코어 수 - 2)
@@ -38,7 +38,8 @@ DEFAULT_CONFIG = os.path.join(ROOT, "scale_evaluation", "config", "scale.yaml")
 def main():
     ap = argparse.ArgumentParser(description="scalability: rule vs learned over N (with scaled map / survivors / time)")
     ap.add_argument("--config", default=DEFAULT_CONFIG)
-    ap.add_argument("--checkpoint", default=None)
+    ap.add_argument("--checkpoint", default=None,
+                    help="학습 모델 경로 — best 모델 폴더 또는 학습 체크포인트 (구성요소 모드는 eval_common/model_loader.py 가 정함)")
     ap.add_argument("--n", default=None, help="UAV 수 목록 '2,4,8' (scale.yaml n_list)")
     ap.add_argument("--seeds", default=None, help="'0-49' / '0,3,7'")
     ap.add_argument("--preset", default=None, help="scale.yaml presets 이름 (default / fixed ...)")
@@ -86,7 +87,10 @@ def main():
         raise SystemExit(f"맵 크기 조정은 map_mode: random 에서만 (지금 {base.get('map_mode')!r}) — preset fixed 를 쓰거나 env_scale.yaml")
     envs = {n: scaled_env_config(base, n, n_ref, rule) for n in ns}
     out = make_run_dir("scale_evaluation", f"{cfg.get('tag') or 'scale'}_{cfg['preset']}")
-    print(f"[scale] checkpoint {os.path.relpath(ckpt, ROOT)}  N_ref {n_ref}  N {ns}  seeds {cfg['seeds']} ({len(seeds)})  "
+    from eval_common.model_loader import inspect_model, rel
+    spec = inspect_model(compare.rc._abs(cfg["checkpoint"]))
+    combo = f"{spec.combo} ({spec.describe()})"
+    print(f"[scale] model {rel(compare.rc._abs(cfg['checkpoint']))} ({combo}) vs rule  N_ref {n_ref}  N {ns}  seeds {cfg['seeds']} ({len(seeds)})  "
           f"preset {cfg['preset']} {rule}  mode {cfg['mode']}  workers {workers}  -> {os.path.relpath(out, ROOT)}")
     for n in ns:
         d = describe(envs[n])
@@ -108,7 +112,8 @@ def main():
         secondary = any(rule.get(k) is not None for k in ("map", "survivors"))
         figs = plots.make_all(summary, infer, ns, n_ref, out, fig_cfg, secondary)
     write_json(os.path.join(out, "meta.json"), {
-        "script": "main_scale.py", "argv": sys.argv[1:], "config": cfg, "checkpoint": ckpt, "n_ref": n_ref,
+        "script": "main_scale.py", "argv": sys.argv[1:], "config": cfg, "checkpoint": ckpt,
+        "combination": {"baseline": "rule_rule_rule (rule policy)", "learned": combo}, "n_ref": n_ref,
         "preset_rule": rule, "env_config_files": [os.path.relpath(f, ROOT) for f in SCALE_FILES], "env_config_base": base, "env_config_used": {str(n): used[n] for n in ns},
         "forced_checkpoint_keys": {str(n): warns[n] for n in ns}, "git": git_info(), "seeds": seeds,
         "workers": workers, "torch_threads_per_worker": 1, "inference_device": "cpu",
@@ -125,17 +130,17 @@ def main():
     notes = []
     for n in ns:
         r = by[(n, "rescue_rate")]
-        g = lambda m, p="rule": by[(n, m)][f"{p}_mean"]
+        g = lambda m, p="baseline": by[(n, m)][f"{p}_mean"]
         p = "n/a" if r["p_wilcoxon"] != r["p_wilcoxon"] else f"{r['p_wilcoxon']:.3f}"
         dz = "n/a" if r["d_z"] != r["d_z"] else f"{r['d_z']:+.2f}"
-        print(f"{n:>3}{r['rows']:>4}x{r['cols']:<4}{r['survivors']:>8}{r['rule_mean']:>9.3f}±{r['rule_std']:<6.3f}"
-              f"{r['model_mean']:>9.3f}±{r['model_std']:<6.3f}"
+        print(f"{n:>3}{r['rows']:>4}x{r['cols']:<4}{r['survivors']:>8}{r['baseline_mean']:>9.3f}±{r['baseline_std']:<6.3f}"
+              f"{r['learned_mean']:>9.3f}±{r['learned_std']:<6.3f}"
               f"{r['diff_mean']:>+12.3f} [{r['diff_ci_lo']:+.3f}, {r['diff_ci_hi']:+.3f}]{dz:>7}{p:>7}"
-              f"{g('ub_loose'):>7.3f}{g('rescue_over_ub'):>7.3f}|{g('rescue_over_ub', 'model'):<5.3f}"
-              f"{g('rescued_per_uav'):>8.2f}|{g('rescued_per_uav', 'model'):<5.2f}"
+              f"{g('ub_loose'):>7.3f}{g('rescue_over_ub'):>7.3f}|{g('rescue_over_ub', 'learned'):<5.3f}"
+              f"{g('rescued_per_uav'):>8.2f}|{g('rescued_per_uav', 'learned'):<5.2f}"
               f"{g('group_size_mean'):>6.2f}{g('isolated_frac'):>6.2f}"
               f"{g('expire_undiscovered_rate'):>7.3f}/{g('expire_unassigned_rate'):.3f}/{g('expire_assigned_rate'):.3f}"
-              f"{g('trunc_frac_S', 'model'):>8.3f}|{g('trunc_frac_K', 'model'):<6.3f}{inf[n]['infer_ms_mean']:>8.2f}")
+              f"{g('trunc_frac_S', 'learned'):>8.3f}|{g('trunc_frac_K', 'learned'):<6.3f}{inf[n]['infer_ms_mean']:>8.2f}")
         if r["p_note"] or r["unanimous"]:
             notes.append(f"N={n}: " + "; ".join(x for x in (r["p_note"], f"all favour {r['unanimous']}" if r["unanimous"] else "") if x))
     print("(UB = UB_loose, r/UB = 구조율 / UB_loose, grp = 통신 그룹 평균 크기 (규칙), iso = 고립 UAV 비율 (규칙), "

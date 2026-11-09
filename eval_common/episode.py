@@ -7,6 +7,8 @@
 """
 import numpy as np
 
+from env.core.modes import Mode
+
 class RulePolicy:
     """그리디 정책을 CheckpointPolicy 와 같은 인터페이스로 (step / seed / set_mode) — 비교 평가용."""
 
@@ -124,6 +126,70 @@ def _slot_metrics(acc):
     return m
 
 
+# ---------------------------------------------------------------- 할당 충돌 (읽기 전용 — env 동작에 영향 없음)
+
+CONFLICT_KEYS = ("conflict_concurrent", "conflict_concurrent_same_group", "conflict_concurrent_cross_group", "wasted_trips",
+                 "wasted_steps", "conflict_reward")
+
+
+class ConflictTracker:
+    """구조 할당 충돌 (모든 정책에 같은 정의). step 마다 before(sim) -> sim.step... -> after(sim), 끝나면 metrics(sim).
+      동시 추격   새 구조 목표 결정 시점에 다른 UAV 가 같은 생존자를 쫓는 중 (env/role/simulation.py _log_rescue_choice,
+                  ev_stats concurrent_same / concurrent_cross, 결정 수 rescue_new_decisions = 같은 생존자 유지 제외)
+      헛걸음      UAV i 의 추격 (같은 생존자 k 를 RESCUE 목표로 둔 연속 step, 그 step 에 실제로 향한 목표 = sim.last_ctx.chosen_target)
+                  이 끝났을 때 (목표 변경 · 역할 변경 · 에피소드 끝) k 가 다른 UAV 에게 구조되어 있으면 1 회,
+                  낭비 step = 그 추격 동안 실제로 움직인 step 수 (k 가 구조된 뒤 모르고 계속 간 step 포함)
+      보상 기준   학습 보상 할당 충돌 항 (task_conflict) 과 같은 판정 _check_dup 의 횟수 (rw_stats dup_in + dup_out, 규칙 정책도 같은
+                  _decide 경로라 똑같이 판정됨)"""
+
+    def __init__(self, sim):
+        self.chase = [None] * sim.n_agents                       # UAV 별 (생존자, 움직인 step 수)
+        self.wasted_trips = self.wasted_steps = 0
+        self._conc = 0
+
+    @staticmethod
+    def _concurrent(sim):
+        return sim.ev_stats["concurrent_same"] + sim.ev_stats["concurrent_cross"]
+
+    def before(self, sim):
+        self.prev_pos = [a.pos for a in sim.agents]
+        self._conc = self._concurrent(sim)
+
+    def _end(self, sim, i):
+        k, moved = self.chase[i]
+        t = sim.targets[k]
+        if t.rescued_at is not None and t.rescued_by != i:
+            self.wasted_trips += 1
+            self.wasted_steps += moved
+        self.chase[i] = None
+
+    def after(self, sim):
+        """반환: 이번 step 동시 추격 수 (시계열)."""
+        ctx = sim.last_ctx
+        for i, a in enumerate(sim.agents):
+            k = ctx.chosen_target[i] if ctx.chosen_mode[i] is Mode.RESCUE else None
+            if self.chase[i] is not None and self.chase[i][0] != k:
+                self._end(sim, i)
+            if k is not None:
+                c, moved = self.chase[i] or (k, 0)
+                self.chase[i] = (c, moved + int(a.pos != self.prev_pos[i]))
+        return self._concurrent(sim) - self._conc
+
+    def metrics(self, sim):
+        for i in range(sim.n_agents):
+            if self.chase[i] is not None:
+                self._end(sim, i)
+        st = sim.ev_stats
+        n = st["rescue_new_decisions"]
+        m = {"conflict_concurrent": st["concurrent_same"] + st["concurrent_cross"],
+             "conflict_concurrent_same_group": st["concurrent_same"],
+             "conflict_concurrent_cross_group": st["concurrent_cross"],
+             "wasted_trips": self.wasted_trips, "wasted_steps": self.wasted_steps,
+             "conflict_reward": sim.rw_stats["dup_in"] + sim.rw_stats["dup_out"], "rescue_decisions": n}
+        m.update({f"{k}_per_dec": m[k] / n if n else float("nan") for k in CONFLICT_KEYS})
+        return m
+
+
 # ---------------------------------------------------------------- 진단 (상한 · 통신 그룹 · 만료 원인)
 
 def upper_bounds(sim):
@@ -139,13 +205,13 @@ def upper_bounds(sim):
 
 
 def _assigned_now(sim):
-    from env.core.modes import Mode
     return {a.assigned_target for a in sim.agents if a.mode is Mode.RESCUE and a.assigned_target is not None}
 
 
 def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
     """한 에피소드 (sim.random_state = RandomState(seed), sim.reset(), policy.seed(seed)). 반환 (지표 dict, 시계열 [dict] (step 마다), 초기 상태 지문).
-    추가 지표: rescue_time_mean (구조 완료 시각 평균), golden_slack_mean ((마감 - 구조 시각) / 골든타임 평균, 구조된 조난자),
+    추가 지표: rescue_time_mean (구조 완료 시각 평균), discover_to_rescue_mean (구조된 조난자의 발견 -> 구조 step 평균),
+    undiscovered (끝날 때 한 번도 발견되지 않은 조난자 수), golden_slack_mean ((마감 - 구조 시각) / 골든타임 평균, 구조된 조난자),
     rescued_per_uav, decisions (결정 수 = role + rescue + explore 1 단계), infer_ms_per_decision (모델: 결정이 있던 step 의
     추론 시간 합 / 결정 수, CPU 벽시계).
     슬롯 잘림 (slot_snapshot, 결정 시점 UAV 기준): S = 역할 결정, K = explore 1 단계 결정에서 센다.
@@ -159,7 +225,10 @@ def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
       만료 원인 (N_T 대비): expire_undiscovered_rate (미발견 상태로 만료), expire_unassigned_rate (발견했지만 아무도 맡지 않음),
       expire_assigned_rate (RESCUE UAV 가 맡고 있던 중 만료 — 만료 step 직전 배정 기준, env 가 만료 때 배정을 해제하므로),
       unresolved_end_rate (끝날 때 구조도 만료도 안 된 조난자).
-    시계열: step, cum_rescue_rate, cum_discover_rate, explored, role_explore / role_rescue / role_return (UAV 비율)."""
+    할당 충돌 (ConflictTracker): conflict_concurrent (_same_group / _cross_group), wasted_trips, wasted_steps, conflict_reward,
+      rescue_decisions (새 구조 목표 결정 수) + 각 결정당 비율 *_per_dec.
+    시계열: step, cum_rescue_rate, cum_discover_rate, explored, role_explore / role_rescue / role_return (UAV 비율),
+      conflict_concurrent (그 step 의 동시 추격 수)."""
     import time
     from env.core.targets import deadline
     sim.random_state = np.random.RandomState(seed)
@@ -174,9 +243,11 @@ def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
     exp_cause = {"undiscovered": 0, "unassigned": 0, "assigned": 0}
     grp = {"size": 0.0, "n": 0.0, "iso": 0.0, "steps": 0}
     infer_s = 0.0
+    tracker = ConflictTracker(sim)
     done, info, ts = False, {}, []
     while not done:
         snap = slot_snapshot(sim)
+        tracker.before(sim)
         held_before = _assigned_now(sim)
         if hasattr(policy, "act"):                               # 학습 모델: 추론 시간 측정
             t0 = time.perf_counter()
@@ -186,6 +257,7 @@ def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
         else:
             dt = None
             done, info = policy.step(sim)
+        n_conc = tracker.after(sim)
         n_dec = int(sum(info["role_valid"]) + sum(info["rescue_valid"]) + sum(info["explore_valid"]))
         if dt is not None and n_dec > 0:
             infer_s += dt
@@ -208,13 +280,16 @@ def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
             roles = np.bincount(np.asarray(info["role"], int), minlength=3) / max(1, len(info["role"]))
             ts.append({"step": int(info["time"]), "cum_rescue_rate": info["rescued_total"] / n_t,
                        "cum_discover_rate": info["discovered_total"] / n_t, "explored": float(info["explored"]),
-                       "role_explore": float(roles[0]), "role_rescue": float(roles[1]), "role_return": float(roles[2])})
+                       "role_explore": float(roles[0]), "role_rescue": float(roles[1]), "role_return": float(roles[2]),
+                       "conflict_concurrent": n_conc})
     rescued = [t for t in sim.targets if t.rescued_at is not None]
     m = {"rescue_rate": info["rescued_total"] / n_t, "expire_rate": info["expired_total"] / n_t,
          "discover_rate": info["discovered_total"] / n_t, "explored": info["explored"],
          "same_cell": info["same_cell_total"], "conflict_cross": conflict, "escalations": esc,
          "episode_len": info["time"], "n_targets": len(sim.targets), "n_agents": sim.n_agents,
          "rescue_time_mean": float(np.mean([t.rescued_at for t in rescued])) if rescued else float("nan"),
+         "discover_to_rescue_mean": float(np.mean([t.rescued_at - t.discovered_at for t in rescued])) if rescued else float("nan"),
+         "undiscovered": sum(1 for t in sim.targets if not t.discovered),
          "golden_slack_mean": float(np.mean([(deadline(t) - t.rescued_at) / max(1, t.golden_time) for t in rescued]))
          if rescued else float("nan"),
          "rescued_per_uav": info["rescued_total"] / max(1, sim.n_agents), "decisions": decisions,
@@ -226,5 +301,5 @@ def run_episode_detailed(sim, policy, seed, timeseries=True, decision_log=None):
          "isolated_frac": grp["iso"] / max(1, grp["steps"]),
          "expire_undiscovered_rate": exp_cause["undiscovered"] / n_t, "expire_unassigned_rate": exp_cause["unassigned"] / n_t,
          "expire_assigned_rate": exp_cause["assigned"] / n_t,
-         "unresolved_end_rate": sum(1 for t in sim.targets if t.active) / n_t}
+         "unresolved_end_rate": sum(1 for t in sim.targets if t.active) / n_t, **tracker.metrics(sim)}
     return m, ts, sig

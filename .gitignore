@@ -5,32 +5,42 @@ __pycache__/
 .eggs/
 build/
 dist/
+.pytest_cache/
+.ipynb_checkpoints/
 
-# 가상환경 / IDE
+# 가상환경 / IDE / 로컬 도구
 .venv/
 venv/
 .idea/
 .vscode/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db
 
-# 학습 결과 (train.py 가 marl_models/ 에 저장)
+# 학습 결과 (training/train.py 가 marl_models/ 에 저장) — run 폴더 · best 모델 전부 제외
 marl_models/
 ray_results/
 checkpoints/
-*.log
 events.out.tfevents.*
+*.pkl
+*.pt
+*.pth
+
+# 로그 · 임시 · scratch
+*.log
+scratch/
+tmp/
 
 # 참고 논문 PDF — 출판사 저작권 + 용량 문제로 기본 제외 (비공개 레포면 아래 두 줄 지워도 됨)
 paper/
 docs/paper/
 
-# 테스트 출력 (tests/role/smoke_role_gui.py 의 GUI 프레임 PNG)
+# 테스트 출력 (tests/role/smoke_role_gui.py 등의 GUI 프레임 PNG)
 tests/out/
 
-# 분석 그래프 (GUI Alloc Plots)
+# 분석 그래프 (GUI 임무 할당 그래프 예전 위치)
 figures/
 
-# 분석 결과 (evaluation/upper_bound.py)
+# 평가 · 분석 결과 (main_rule / main_scale / upper_bound / GUI)
 results/

@@ -1,210 +1,296 @@
-"""main_rule 그림 · 표 (eval_common/paper_style.py 스타일, 그림마다 PDF + PNG + 원자료 CSV). 실행한 정책 (--run) 만 그린다.
+"""main_rule 그림 · 표 (eval_common/paper_style.py 스타일, 그림마다 PDF + PNG + 원자료 CSV). 정책 색은 label 별 고정
+(paper_style.policy_styles — 모든 그림에서 같은 색).
 
-    1 fig_metrics_ci       rescue / discover / expire rate, explored — 정책별 평균 · 95% CI 점그래프 (패널 4 개)
-    2 fig_rescue_violin    구조율 분포 violin + seed 별 점
-    3 fig_paired_scatter   seed 별 구조율 (x = 규칙, y = 모델), y = x 대각선 — 위쪽이 모델 우세          (both 만)
-    4 fig_cumulative       step 에 따른 누적 구조율 · 발견율 (평균 + 95% CI 음영)
-    5 fig_role_mix         역할 비율 시계열 (누적 영역) — 모델 (rule 만 실행하면 규칙 정책)
-    6 fig_convergence      에피소드 수에 따른 구조율 짝 차이 (모델 - 규칙) 평균 · 95% CI                 (both 만)
-    summary_table.tex      지표별 평균 ± 표준편차 (both 면 + 차이 [95% CI], d_z, p-value, 더 좋은 평균 굵게)
+    fig_compare_bar      지표별 (패널) 정책 평균 + 95% bootstrap CI 막대
+    fig_compare_paired   쌍별 seed 차이 (A - B) 분포 — 구조율 · 에피소드 길이 패널, strip + 평균 · 95% CI, 0 기준선
+    fig_compare_seed     seed 별 구조율 선 (정책별 색), seed 는 기준 정책 (목록 첫 정책) 구조율 순으로 정렬
+    fig_compare_cumulative  에피소드 진행률 (%) 에 따른 누적 발견율 (실선) · 구조율 (점선), 정책별 색, seed 평균 + 95% CI 음영
+    fig_compare_roles    정책별 패널: 진행률에 따른 EXPLORE / RESCUE / RETURN 비율 (seed 평균, stacked area)
+    (진행률 = step / 그 에피소드 길이, 10 % 구간 — rule_evaluation/compare.py progress_bins · progress_stats)
+    fig_compare_conflict    할당 충돌: (a) 에피소드당 동시 추격 (다른 그룹 + 같은 그룹 빗금 누적, 합계 CI) (b) 헛걸음 (c) 낭비 step
+                         (d) 구조 결정당 동시 추격 — 평균 + 95% CI
+    fig_compare_conflict_time   진행률 10 % 구간별 동시 추격 수, 정책별 선 + CI 음영
+    (fig_compare_bar 는 BAR_METRICS 만 — 충돌 지표는 위 두 그림)
+    table_main.tex       (1) 행 = 정책, 열 = 구조율 · 만료율 · 에피소드 길이 · 발견→구조 시간 (평균 [95% CI], 열마다 가장 좋은 평균 굵게)
+                         (2) 짝 비교: 쌍, Δ구조율 [95% CI], W/T/L, Holm p, d_z
+    table_conflict.tex   (1) 행 = 정책, 열 = 동시 추격 · 결정당 동시 추격 · 헛걸음 · 낭비 step · 보상 기준 충돌 (적을수록 굵게)
+                         (2) 짝 비교: 동시 추격 · 헛걸음 · 낭비 step 의 쌍별 Δ [CI], W/T/L (W = A 가 더 적음), Holm p, d_z
 """
 import os
 
 import numpy as np
-from matplotlib.ticker import MaxNLocator
 
 from eval_common import paper_style as ps
-from eval_common.io import latex_table
+from eval_common.io import latex_block
+from eval_common.paper_style import LABEL
 
-LABEL = {"rescue_rate": "Rescue rate", "expire_rate": "Expire rate", "discover_rate": "Discover rate",
-         "explored": "Explored ratio", "episode_len": "Episode length", "rescue_time_mean": "Mean rescue time",
-         "golden_slack_mean": "Golden-time slack", "same_cell": "Same-cell overlaps", "conflict_cross": "Cross-group conflicts",
-         "escalations": "Escalations", "rescued_per_uav": "Rescued per UAV", "infer_ms_per_decision": "Inference (ms/decision)",
-         "trunc_decisions_S": "Truncated decisions (S)", "trunc_frac_S": "Truncated-decision ratio (S)",
-         "dropped_S": "Dropped candidates (S)", "dropped_S_per_dec": "Dropped per decision (S)",
-         "dropped_urgent_S": "Dropped urgent (S)", "best_dropped_S": "EDF choice dropped (S)",
-         "trunc_decisions_K": "Truncated decisions (K)", "trunc_frac_K": "Truncated-decision ratio (K)",
-         "dropped_K": "Dropped blobs (K)", "dropped_K_cells": "Dropped frontier cells (K)",
-         "s_nodes_overflow": "S-node overflow", "ub_loose": r"Upper bound $UB_\mathrm{loose}$",
-         "ub_greedy": r"$UB_\mathrm{greedy}$", "rescue_over_ub": r"Rescue rate / $UB_\mathrm{loose}$",
-         "group_size_mean": "Mean comm. group size", "n_groups_mean": "Mean number of groups",
-         "isolated_frac": "Isolated-UAV ratio", "expire_undiscovered_rate": "Expired undiscovered",
-         "expire_unassigned_rate": "Expired unassigned", "expire_assigned_rate": "Expired while assigned"}
-POLICIES = ("rule", "model")
-NAME = {"rule": "Rule", "model": "Learned"}
+TABLE_METRICS = ("rescue_rate", "expire_rate", "episode_len", "discover_to_rescue_mean")
+BAR_METRICS = ("rescue_rate", "expire_rate", "discover_rate", "episode_len", "discover_to_rescue_mean", "undiscovered")
+CONFLICT_TABLE = ("conflict_concurrent", "conflict_concurrent_per_dec", "wasted_trips", "wasted_steps", "conflict_reward")
+CONFLICT_PAIRS = ("conflict_concurrent", "wasted_trips", "wasted_steps")
+DIGITS = {"episode_len": 1, "discover_to_rescue_mean": 1, "undiscovered": 2, "conflict_concurrent": 2, "wasted_trips": 2,
+          "wasted_steps": 1, "conflict_reward": 2}
 
 
-def _pols(rows):
-    """요약 행 / 에피소드 행에 있는 정책 (POLICIES 순)."""
-    if rows and "metric" in rows[0]:
-        return tuple(p for p in POLICIES if f"{p}_mean" in rows[0])
-    have = {r["policy"] for r in rows}
-    return tuple(p for p in POLICIES if p in have)
+def _rows(rows, **kw):
+    return [r for r in rows if all(r[k] == v for k, v in kw.items())]
 
 
-def _sty(p):
-    return ps.POLICY_STYLE[p]
-
-
-def fig_metrics_ci(summary, out, width="double"):
-    keys = ["rescue_rate", "discover_rate", "expire_rate", "explored"]
-    rows = [r for r in summary if r["metric"] in keys]
-    pols = _pols(summary)
-    fig, axes = ps.figure(width, 1.9, ncols=len(rows))
+def fig_compare_bar(summary, labels, metrics, out, width="double", dpi=300):
+    sty = ps.policy_styles(labels)
+    ncols = 3 if len(metrics) > 4 else len(metrics)
+    nrows = int(np.ceil(len(metrics) / ncols))
+    fig, axes = ps.figure(width, 1.75 * nrows + 0.35, ncols=ncols, nrows=nrows, squeeze=False)
+    axes = axes.ravel()
     data = []
-    for ax, r in zip(np.atleast_1d(axes), rows):
-        for k, p in enumerate(pols):
-            s = _sty(p)
-            mu, lo, hi = r[f"{p}_mean"], r[f"{p}_ci_lo"], r[f"{p}_ci_hi"]
-            ax.errorbar([k], [mu], yerr=[[mu - lo], [hi - mu]], fmt=s["marker"], color=s["color"], label=s["label"])
-            data.append({"metric": r["metric"], "policy": p, "mean": mu, "ci_lo": lo, "ci_hi": hi, "n": r["n"]})
-        ax.set_xticks(range(len(pols)))
-        ax.set_xticklabels([NAME[p] for p in pols])
-        ax.set_xlim(-0.6, len(pols) - 0.4)
-        ax.set_ylabel(LABEL[r["metric"]])
-    return ps.save(fig, os.path.join(out, "fig_metrics_ci"), data)
+    for ax, m in zip(axes, metrics):
+        for k, lab in enumerate(labels):
+            r = _rows(summary, policy=lab, metric=m)[0]
+            mu, lo, hi = r["mean"], r["ci_lo"], r["ci_hi"]
+            ax.bar([k], [mu], width=0.7, color=sty[lab]["color"], alpha=0.85, label=lab,
+                   yerr=[[mu - lo], [hi - mu]], error_kw={"elinewidth": 0.8, "capsize": 2})
+            data.append({"metric": m, "policy": lab, "mean": mu, "ci_lo": lo, "ci_hi": hi, "n": r["n"]})
+        ax.set_xticks([])
+        ax.set_ylabel(LABEL.get(m, m))
+        ax.grid(axis="x", visible=False)
+    for ax in axes[len(metrics):]:
+        ax.set_visible(False)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside upper center", ncol=len(labels))
+    return ps.save(fig, os.path.join(out, "fig_compare_bar"), data, dpi)
 
 
-def fig_rescue_violin(per, out):
-    fig, ax = ps.figure("single", 2.3)
-    rng = np.random.RandomState(0)
+def fig_compare_paired(per, pw, pairs, out, metrics=("rescue_rate", "episode_len"), width="double", dpi=300):
+    sty = ps.policy_styles(dict.fromkeys(x for pr in pairs for x in pr))
+    fig, axes = ps.figure(width, 2.4, ncols=len(metrics), squeeze=False)
     data = []
-    pols = _pols(per)
-    for k, p in enumerate(pols):
-        s = _sty(p)
-        x = np.array([r["rescue_rate"] for r in per if r["policy"] == p], float)
-        vp = ax.violinplot([x], positions=[k], widths=0.7, showextrema=False)
-        for b in vp["bodies"]:
-            b.set_facecolor(s["color"])
-            b.set_alpha(0.25)
-            b.set_edgecolor(s["color"])
-        ax.scatter(k + rng.uniform(-0.12, 0.12, len(x)), x, s=7, color=s["color"], marker=s["marker"], alpha=0.8,
-                   linewidths=0)
-        data += [{"policy": p, "seed": r["seed"], "rescue_rate": r["rescue_rate"]} for r in per if r["policy"] == p]
-    ax.set_xticks(range(len(pols)))
-    ax.set_xticklabels([NAME[p] for p in pols])
-    ax.set_ylabel("Rescue rate")
-    return ps.save(fig, os.path.join(out, "fig_rescue_violin"), data)
+    for ax, metric in zip(axes[0], metrics):
+        rng = np.random.RandomState(0)
+        ax.axhline(0, color="0.4", lw=0.8, zorder=0)
+        for k, (a, b) in enumerate(pairs):
+            ba = {r["seed"]: r[metric] for r in per if r["policy"] == a}
+            bb = {r["seed"]: r[metric] for r in per if r["policy"] == b}
+            seeds = sorted(set(ba) & set(bb))
+            d = np.array([ba[s] - bb[s] for s in seeds], float)
+            ax.scatter(k + rng.uniform(-0.18, 0.18, len(d)), d, s=7, color=sty[a]["color"], alpha=0.6, linewidths=0)
+            st = _rows(pw, a=a, b=b, metric=metric)[0]
+            ax.errorbar([k + 0.3], [st["mean"]], yerr=[[st["mean"] - st["ci_lo"]], [st["ci_hi"] - st["mean"]]], fmt="o",
+                        color="black", ms=3.5, elinewidth=1.0, capsize=2.5)
+            data += [{"metric": metric, "pair": f"{a} - {b}", "seed": s, "diff": x} for s, x in zip(seeds, d)]
+        ax.set_xticks(range(len(pairs)))
+        ax.set_xticklabels([f"{a}\n$-$ {b}" for a, b in pairs], fontsize=5.5)
+        ax.set_xlim(-0.5, len(pairs) - 0.3)
+        ax.set_ylabel(r"$\Delta$ " + LABEL.get(metric, metric).lower() + " (per seed)")
+        ax.grid(axis="x", visible=False)
+    return ps.save(fig, os.path.join(out, "fig_compare_paired"), data, dpi)
 
 
-def fig_paired_scatter(per, out):
-    by = {p: {r["seed"]: r["rescue_rate"] for r in per if r["policy"] == p} for p in POLICIES}
-    seeds = sorted(set(by["rule"]) & set(by["model"]))
-    x = np.array([by["rule"][s] for s in seeds])
-    y = np.array([by["model"][s] for s in seeds])
-    fig, ax = ps.figure("single", 2.6)
-    lo, hi = min(x.min(), y.min()) - 0.02, max(x.max(), y.max()) + 0.02
-    ax.plot([lo, hi], [lo, hi], color="0.5", lw=0.8, ls=":")
-    ax.scatter(x, y, s=10, color=_sty("model")["color"], marker="o", alpha=0.8, linewidths=0)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    ax.set_aspect("equal")
-    ax.set_xlabel("Rule rescue rate")
-    ax.set_ylabel("Learned rescue rate")
-    return ps.save(fig, os.path.join(out, "fig_paired_scatter"),
-                   [{"seed": s, "rule": a, "model": b} for s, a, b in zip(seeds, x, y)])
+def fig_compare_seed(per, labels, out, metric="rescue_rate", width="double", dpi=300):
+    sty = ps.policy_styles(labels)
+    by = {lab: {r["seed"]: r[metric] for r in per if r["policy"] == lab} for lab in labels}
+    seeds = sorted(set.intersection(*[set(v) for v in by.values()]), key=lambda s: (by[labels[0]][s], s))
+    x = np.arange(len(seeds))
+    fig, ax = ps.figure(width, 2.2)
+    for lab in labels:
+        ax.plot(x, [by[lab][s] for s in seeds], color=sty[lab]["color"], marker=sty[lab]["marker"], ms=2.5, lw=0.9,
+                alpha=0.9, label=lab)
+    if len(seeds) <= 30:
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(s) for s in seeds], fontsize=6)
+    ax.set_xlabel(f"Seed (sorted by {labels[0]} {LABEL.get(metric, metric).lower()})")
+    ax.set_ylabel(LABEL.get(metric, metric))
+    ax.legend(loc="lower right", ncol=len(labels))
+    return ps.save(fig, os.path.join(out, "fig_compare_seed"),
+                   [{"rank": i, "seed": s, **{lab: by[lab][s] for lab in labels}} for i, s in enumerate(seeds)], dpi)
 
 
-def fig_cumulative(tstats, out, width="double"):
-    fig, axes = ps.figure(width, 2.0, ncols=2)
-    for ax, key, lab in zip(axes, ("cum_rescue_rate", "cum_discover_rate"), ("Cumulative rescue rate", "Cumulative discover rate")):
-        for p in _pols(tstats):
-            s = _sty(p)
-            rows = [r for r in tstats if r["policy"] == p and f"{key}_mean" in r]
-            t = [r["step"] for r in rows]
-            ax.plot(t, [r[f"{key}_mean"] for r in rows], color=s["color"], ls=s["linestyle"], label=s["label"])
-            ax.fill_between(t, [r[f"{key}_lo"] for r in rows], [r[f"{key}_hi"] for r in rows], color=s["color"], alpha=0.2,
-                            linewidth=0)
-        ax.set_xlabel("Step")
-        ax.set_ylabel(lab)
-    axes[0].legend(loc="lower right")
-    data = [{k: v for k, v in r.items() if k == "policy" or k == "step" or k.startswith(("cum_rescue", "cum_discover"))}
-            for r in tstats]
-    return ps.save(fig, os.path.join(out, "fig_cumulative"), data)
+def fig_compare_cumulative(pstats, labels, out, width="single", dpi=300):
+    sty = ps.policy_styles(labels)
+    fig, ax = ps.figure(width, 2.5)
+    for lab in labels:
+        rows = [r for r in pstats if r["policy"] == lab]
+        x = [r["progress"] for r in rows]
+        for key, ls in (("cum_discover_rate", "-"), ("cum_rescue_rate", ":")):
+            ax.plot(x, [r[f"{key}_mean"] for r in rows], color=sty[lab]["color"], ls=ls, marker=sty[lab]["marker"], ms=2.5)
+            ax.fill_between(x, [r[f"{key}_lo"] for r in rows], [r[f"{key}_hi"] for r in rows], color=sty[lab]["color"],
+                            alpha=0.15, linewidth=0)
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], color=sty[lab]["color"], marker=sty[lab]["marker"], ms=3, label=lab) for lab in labels]
+    handles += [Line2D([], [], color="0.3", ls="-", label="discovered"), Line2D([], [], color="0.3", ls=":", label="rescued")]
+    ax.legend(handles=handles, loc="lower right", fontsize=6)
+    ax.set_xlabel("Episode progress (%)")
+    ax.set_ylabel("Cumulative ratio of survivors")
+    ax.set_xlim(0, 100)
+    return ps.save(fig, os.path.join(out, "fig_compare_cumulative"),
+                   [{k: v for k, v in r.items() if k in ("policy", "bin", "progress", "n") or k.startswith("cum_")}
+                    for r in pstats], dpi)
 
 
-def fig_role_mix(tstats, out):
-    pol = "model" if "model" in _pols(tstats) else "rule"
-    rows = [r for r in tstats if r["policy"] == pol and "role_explore_mean" in r]
-    t = [r["step"] for r in rows]
-    ys = [[r[f"role_{k}_mean"] for r in rows] for k in ("explore", "rescue", "return")]
-    fig, ax = ps.figure("single", 2.2)
-    ax.stackplot(t, *ys, colors=[ps.ROLE_COLORS[k] for k in ("explore", "rescue", "return")],
-                 labels=["Explore", "Rescue", "Return"], alpha=0.85, linewidth=0)
-    ax.set_xlabel("Step")
-    ax.set_ylabel(f"Role share ({NAME[pol].lower()})")
-    ax.set_ylim(0, 1)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
-    return ps.save(fig, os.path.join(out, "fig_role_mix"),
-                   [{"step": a, "explore": b, "rescue": c, "return": d} for a, b, c, d in zip(t, *ys)])
+def fig_compare_roles(pstats, labels, out, width="double", dpi=300):
+    keys = ("explore", "rescue", "return")
+    fig, axes = ps.figure(width, 2.0, ncols=len(labels), squeeze=False, sharey=True)
+    for ax, lab in zip(axes[0], labels):
+        rows = [r for r in pstats if r["policy"] == lab]
+        x = [0.0] + [r["progress"] for r in rows]                 # 구간 평균을 구간 오른쪽 끝에 두고 0 % 는 첫 구간 값
+        ys = [[rows[0][f"role_{k}_mean"]] + [r[f"role_{k}_mean"] for r in rows] for k in keys]
+        ax.stackplot(x, *ys, colors=[ps.ROLE_COLORS[k] for k in keys], labels=["EXPLORE", "RESCUE", "RETURN"], alpha=0.85,
+                     linewidth=0, step="pre")
+        ax.set_title(lab, fontsize=7.5)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 1)
+        ax.set_xlabel("Episode progress (%)")
+        ax.grid(False)
+    axes[0][0].set_ylabel("Role share of UAVs")
+    fig.legend(*axes[0][0].get_legend_handles_labels(), loc="outside upper center", ncol=3)
+    return ps.save(fig, os.path.join(out, "fig_compare_roles"),
+                   [{k: v for k, v in r.items() if k in ("policy", "bin", "progress", "n") or k.startswith("role_")}
+                    for r in pstats], dpi)
 
 
-def fig_convergence(conv, out):
-    fig, ax = ps.figure("single", 2.2)
-    k = [r["episodes"] for r in conv]
-    ax.axhline(0, color="0.4", lw=0.8)
-    ax.plot(k, [r["diff_mean"] for r in conv], color=_sty("model")["color"])
-    ax.fill_between(k, [r["ci_lo"] for r in conv], [r["ci_hi"] for r in conv], color=_sty("model")["color"], alpha=0.2,
-                    linewidth=0)
-    ax.set_xlabel("Number of episodes")
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax.set_ylabel(r"$\Delta$ rescue rate (learned $-$ rule)")
-    return ps.save(fig, os.path.join(out, "fig_convergence"), conv)
+def _tex(label):
+    return label.replace("_", r"\_")
 
 
-def _fmt(x, digits=3):
-    return "--" if x is None or x != x else f"{x:.{digits}f}"
-
-
-def summary_table(summary, path, n):
-    pols = _pols(summary)
-    if len(pols) < 2:                                            # 한 정책만 실행: 평균 ± 표준편차, 95 % CI
-        p = pols[0]
-        rows = [[LABEL.get(r["metric"], r["metric"].replace("_", r"\_")),
-                 f"{_fmt(r[f'{p}_mean'])} $\pm$ {_fmt(r[f'{p}_std'])}",
-                 f"[{_fmt(r[f'{p}_ci_lo'])}, {_fmt(r[f'{p}_ci_hi'])}]"] for r in summary]
-        return latex_table(path, ["Metric", NAME[p], r"95\% CI"], rows, "lcc",
-                           caption=f"{NAME[p]} policy (mean $\pm$ std over {n} episodes, 95\% bootstrap CI).",
-                           label=f"tab:{p}_only")
-    header = ["Metric", "Rule", "Learned", r"$\Delta$ (learned $-$ rule) [95\% CI]", r"$d_z$ [95\% CI]", "$p$",
-              r"min $p$"]
+def _policy_table(summary, labels, cols, lower_is_better, caption, label):
+    """행 = 정책, 열 = 지표 (평균 [95% CI], 열마다 가장 좋은 평균 굵게)."""
+    best = {}
+    for m in cols:
+        ok = {lab: _rows(summary, policy=lab, metric=m)[0]["mean"] for lab in labels}
+        ok = {k: v for k, v in ok.items() if v == v}
+        if ok and len(set(ok.values())) > 1:
+            target = (min if m in lower_is_better else max)(ok.values())
+            best[m] = {k for k, v in ok.items() if v == target}
     rows = []
-    for r in summary:
-        d = 1 if r["metric"] in ("episode_len", "rescue_time_mean", "same_cell", "conflict_cross", "escalations",
-                                 "trunc_decisions_S", "dropped_S", "dropped_urgent_S", "best_dropped_S", "trunc_decisions_K",
-                                 "dropped_K", "dropped_K_cells", "s_nodes_overflow") else 3
-        cells = {p: f"{_fmt(r[f'{p}_mean'], d)} $\\pm$ {_fmt(r[f'{p}_std'], d)}" for p in POLICIES}
-        better = None
-        if r["rule_mean"] == r["rule_mean"] and r["model_mean"] == r["model_mean"] and r["rule_mean"] != r["model_mean"]:
-            better = ("model" if r["model_mean"] > r["rule_mean"] else "rule") if r["higher_is_better"] else \
-                ("model" if r["model_mean"] < r["rule_mean"] else "rule")
-        if better:
-            cells[better] = f"\\textbf{{{cells[better]}}}"
-        rows.append([LABEL.get(r["metric"], r["metric"].replace("_", r"\_")), cells["rule"], cells["model"],
-                     f"{_fmt(r['diff_mean'], d)} [{_fmt(r['diff_ci_lo'], d)}, {_fmt(r['diff_ci_hi'], d)}]"
-                     + (r"$^{\ddagger}$" if r.get("unanimous") else ""),
-                     f"{_fmt(r.get('d_z'), 2)} [{_fmt(r.get('d_z_ci_lo'), 2)}, {_fmt(r.get('d_z_ci_hi'), 2)}]",
-                     _fmt(r["p_wilcoxon"], 3) + (r"$^{\dagger}$" if r.get("p_note") else ""), _fmt(r.get("p_min"), 4)])
-    return latex_table(path, header, rows, "lcccccc",
-                       caption=f"Rule vs.\\ learned policy (mean $\\pm$ std over {n} paired episodes; "
-                               f"$\\Delta$ with 95\\% bootstrap CI; effect size $d_z$ = mean / std of paired differences "
-                               f"with bootstrap CI; Wilcoxon signed-rank $p$ and the smallest attainable $p$ for the number of "
-                               f"non-zero differences. $^{{\\dagger}}$fewer than 6 non-zero differences: $p < 0.05$ is "
-                               f"unattainable. $^{{\\ddagger}}$all paired differences favour the same policy).",
-                       label="tab:rule_vs_model")
+    for lab in labels:
+        cells = [_tex(lab)]
+        for m in cols:
+            r, d = _rows(summary, policy=lab, metric=m)[0], DIGITS.get(m, 3)
+            c = f"{ps.fmt(r['mean'], d)} [{ps.fmt(r['ci_lo'], d)}, {ps.fmt(r['ci_hi'], d)}]"
+            cells.append(f"\\textbf{{{c}}}" if lab in best.get(m, ()) else c)
+        rows.append(cells)
+    return latex_block(["Policy"] + [LABEL[m] for m in cols], rows, "l" + "c" * len(cols), caption=caption, label=label)
 
 
-def make_all(per, summary, tstats, conv, out_dir, fig_cfg):
+def _pair_table(pw, pairs, cols, caption, label):
+    """행 = 쌍 (지표가 여럿이면 쌍 × 지표), 열 = Δ [95% CI], W/T/L, Holm p, d_z."""
+    rows = []
+    for m in cols:
+        for a, b in pairs:
+            r, d = _rows(pw, a=a, b=b, metric=m)[0], DIGITS.get(m, 3)
+            rows.append(([LABEL[m]] if len(cols) > 1 else []) +
+                        [f"{_tex(a)} $-$ {_tex(b)}", f"{ps.fmt(r['mean'], d)} [{ps.fmt(r['ci_lo'], d)}, {ps.fmt(r['ci_hi'], d)}]",
+                         f"{r['win']}/{r['tie']}/{r['loss']}", ps.fmt(r["p_holm"], 3), ps.fmt(r["d_z"], 2)])
+    head = (["Metric"] if len(cols) > 1 else []) + ["Pair", (r"$\Delta$ [95\% CI]" if len(cols) > 1 else
+                                                              r"$\Delta$ " + LABEL[cols[0]].lower() + r" [95\% CI]"),
+                                                     "W/T/L", r"Holm $p$", "$d_z$"]
+    return latex_block(head, rows, "l" * (len(head) - 4) + "cccc", caption=caption, label=label)
+
+
+_PAIR_NOTE = ("Wilcoxon signed-rank $p$ with Holm correction over the {k} pairs per metric; $d_z$ = mean / std of paired "
+              "differences, -- if the differences are constant")
+
+
+def table_main(summary, pw, labels, pairs, lower_is_better, path, n):
+    """table_main.tex — 정책 표 + 구조율 짝 비교 표 (한 파일에 table 두 개)."""
+    cols = [m for m in TABLE_METRICS if _rows(summary, metric=m)]
+    text = _policy_table(summary, labels, cols, lower_is_better,
+                         f"Policy comparison on the same {n} seeds (mean [95\\% bootstrap CI]; best mean in bold).",
+                         "tab:policy_compare")
+    if pairs:
+        text += "\n" + _pair_table(pw, pairs, ["rescue_rate"],
+                                   f"Paired differences in rescue rate over {n} seeds (A $-$ B; W/T/L = seeds where A is higher / "
+                                   f"equal / lower; {_PAIR_NOTE.format(k=len(pairs))}).", "tab:policy_pairs")
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def table_conflict(summary, pw, labels, pairs, lower_is_better, path, n):
+    """table_conflict.tex — 할당 충돌 정책 표 + 짝 비교 표 (모두 작을수록 좋음: W = A 가 더 적은 seed)."""
+    cols = [m for m in CONFLICT_TABLE if _rows(summary, metric=m)]
+    text = _policy_table(summary, labels, cols, lower_is_better,
+                         f"Rescue-assignment conflicts per episode on the same {n} seeds (mean [95\\% bootstrap CI]; "
+                         f"fewest in bold). Concurrent chase: a new rescue target already pursued by another UAV at decision "
+                         f"time; wasted trip / steps: pursuit that ended after another UAV rescued the target, and the moves "
+                         f"made during it.", "tab:policy_conflict")
+    pcols = [m for m in CONFLICT_PAIRS if _rows(pw, metric=m)]
+    if pairs and pcols:
+        text += "\n" + _pair_table(pw, pairs, pcols,
+                                   f"Paired differences in conflicts over {n} seeds (A $-$ B; lower is better, so W/T/L = seeds "
+                                   f"where A has fewer / equal / more; {_PAIR_NOTE.format(k=len(pairs))}).",
+                                   "tab:policy_conflict_pairs")
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def fig_compare_conflict(summary, labels, out, width="double", dpi=300):
+    """(a) 동시 추격 (같은 그룹 빗금 / 다른 그룹 누적) + 합계 CI, (b) 헛걸음, (c) 낭비 step, (d) 구조 결정당 동시 추격."""
+    sty = ps.policy_styles(labels)
+    fig, axes = ps.figure(width, 2.1, ncols=4)
+    data = []
+    g = lambda lab, m: _rows(summary, policy=lab, metric=m)[0]
+    ax = axes[0]
+    for k, lab in enumerate(labels):
+        same, cross, tot = g(lab, "conflict_concurrent_same_group"), g(lab, "conflict_concurrent_cross_group"), \
+            g(lab, "conflict_concurrent")
+        c = sty[lab]["color"]
+        ax.bar([k], [cross["mean"]], width=0.7, color=c, alpha=0.85)
+        ax.bar([k], [same["mean"]], width=0.7, bottom=[cross["mean"]], color="white", edgecolor=c, hatch="////", lw=0.6)
+        ax.errorbar([k], [tot["mean"]], yerr=[[tot["mean"] - tot["ci_lo"]], [tot["ci_hi"] - tot["mean"]]], fmt="none",
+                    color="black", elinewidth=0.8, capsize=2)
+        data += [{"panel": "a", "metric": r["metric"], "policy": lab, "mean": r["mean"], "ci_lo": r["ci_lo"],
+                  "ci_hi": r["ci_hi"]} for r in (same, cross, tot)]
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(facecolor="0.5", label="cross-group"),
+                       Patch(facecolor="white", edgecolor="0.4", hatch="////", label="same group")], loc="upper left",
+              fontsize=6)
+    ax.set_ylabel("Concurrent chases / episode")
+    for ax, m, ylab in zip(axes[1:], ("wasted_trips", "wasted_steps", "conflict_concurrent_per_dec"),
+                           ("Wasted trips / episode", "Wasted steps / episode", "Concurrent chases / rescue decision")):
+        for k, lab in enumerate(labels):
+            r = g(lab, m)
+            ax.bar([k], [r["mean"]], width=0.7, color=sty[lab]["color"], alpha=0.85, label=lab,
+                   yerr=[[r["mean"] - r["ci_lo"]], [r["ci_hi"] - r["mean"]]], error_kw={"elinewidth": 0.8, "capsize": 2})
+            data.append({"panel": "bcd"[list(axes[1:]).index(ax)], "metric": m, "policy": lab, "mean": r["mean"],
+                         "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"]})
+        ax.set_ylabel(ylab)
+    for k, ax in enumerate(axes):
+        ax.set_xticks([])
+        ax.grid(axis="x", visible=False)
+        ax.set_title(f"({'abcd'[k]})", fontsize=7.5, loc="left")
+    fig.legend(*axes[1].get_legend_handles_labels(), loc="outside upper center", ncol=len(labels))
+    return ps.save(fig, os.path.join(out, "fig_compare_conflict"), data, dpi)
+
+
+def fig_compare_conflict_time(pstats, labels, out, width="single", dpi=300):
+    sty = ps.policy_styles(labels)
+    fig, ax = ps.figure(width, 2.3)
+    for lab in labels:
+        rows = [r for r in pstats if r["policy"] == lab]
+        x = [r["progress"] for r in rows]
+        ax.plot(x, [r["conflict_concurrent_mean"] for r in rows], color=sty[lab]["color"], marker=sty[lab]["marker"], ms=2.5,
+                label=lab)
+        ax.fill_between(x, [r["conflict_concurrent_lo"] for r in rows], [r["conflict_concurrent_hi"] for r in rows],
+                        color=sty[lab]["color"], alpha=0.15, linewidth=0)
+    ax.set_xlabel("Episode progress (%)")
+    ax.set_ylabel("Concurrent chases per 10% bin")
+    ax.set_xlim(0, 100)
+    ax.legend(loc="upper right", fontsize=6)
+    return ps.save(fig, os.path.join(out, "fig_compare_conflict_time"),
+                   [{k: v for k, v in r.items() if k in ("policy", "bin", "progress", "n") or k.startswith("conflict_")}
+                    for r in pstats], dpi)
+
+
+def make_all(per, summary, pw, pstats, labels, pairs, out_dir, fig_cfg):
     fdir = os.path.join(out_dir, "figures")
-    width = fig_cfg.get("width", "double")
-    files = []
-    both = len(_pols(per)) == 2
-    files += fig_metrics_ci(summary, fdir, width)
-    files += fig_rescue_violin(per, fdir)
-    if both:
-        files += fig_paired_scatter(per, fdir)
-    files += fig_cumulative(tstats, fdir, width)
-    files += fig_role_mix(tstats, fdir)
-    if both:
-        files += fig_convergence(conv, fdir)
+    width, dpi = fig_cfg.get("width", "double"), int(fig_cfg.get("dpi", 300))
+    files = fig_compare_bar(summary, labels, [m for m in BAR_METRICS if _rows(summary, metric=m)], fdir, width, dpi)
+    if pairs:
+        files += fig_compare_paired(per, pw, pairs, fdir, width=width, dpi=dpi)
+    files += fig_compare_seed(per, labels, fdir, width=width, dpi=dpi)
+    files += fig_compare_cumulative(pstats, labels, fdir, dpi=dpi)
+    files += fig_compare_roles(pstats, labels, fdir, width=width, dpi=dpi)
+    if _rows(summary, metric="conflict_concurrent"):
+        files += fig_compare_conflict(summary, labels, fdir, width, dpi)
+        files += fig_compare_conflict_time(pstats, labels, fdir, dpi=dpi)
     return files

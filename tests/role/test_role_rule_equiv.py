@@ -2,7 +2,7 @@
 
     python -m tests.role.test_role_rule_equiv [episodes]
 
-학습 rollout 경로 (RolePPOTorchPolicy.compute_actions -> RoleEnv.step, policy_mode 전부 rule) 와
+학습 rollout 경로 (RolePPOTorchPolicy.compute_actions -> RoleEnv.step, 구성요소 (components) 전부 rule) 와
 규칙 실행 경로 (RoleSimulation.step(RuleDecider()) — run_rules.py default) 를 같은 seed 로 돌려
 매 step UAV 위치 / 역할 / 목표와 에피소드 결과(구조 · 만료 · 길이)가 완전히 같은지 확인한다.
 """
@@ -35,7 +35,7 @@ def trace_rollout(env, prep, policy, seed):
         actions, _, _ = policy.compute_actions(prep.transform(obs)[None], explore=True)
         obs, _, done, info = env.step({k: [int(np.asarray(a)[0]) for a in v] for k, v in actions.items()})
         out.append([(a.pos, a.mode.value, a.goal) for a in env.sim.agents])
-        assert sum(info["role_train"]) + sum(info["task_train"]) == 0
+        assert sum(info["role_train"]) + sum(info["rescue_train"]) + sum(info["explore_train"]) == 0
     return out, (info["rescued_total"], info["expired_total"], env.sim.time)
 
 

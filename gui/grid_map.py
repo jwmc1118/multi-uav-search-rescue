@@ -19,21 +19,23 @@ inspector 폭 = main_gui.py INSPECTOR_WIDTH — 레이아웃 (_inspector_geometr
 Controls
 - Space or Play : play / pause          N or Right or Step : single step
 - click a robot card / UAV on the map / 1..9 / Tab : select robot -> 개인 패널, Esc : 해제
-- O : print selected robot's obs to console        M : toggle policy (rules -> random -> model)
+- O : print selected robot's obs to console        M : cycle available combinations (Rule -> Saved role + task rule / separate / joint)
 - while paused: left-drag = obstacles, right-click = add/remove target
 - Change Map : new random obstacle map + targets   Targets : re-place targets only
-- Save/Load : map file   Model : load a trained checkpoint
+- Save/Load : map file   Model : policy window — Source [Saved models] [Training] -> combo (rule_rule_rule, best_model/<combo>) / Run -> model list
 - G or Assign Plots : save assignment analysis figures to results/gui_evaluation/<time>_<policy>_t<step>/ and open the folder
 - P (B) or Path : BFS 경로   C : 덩어리 · 구간 색칠 (전체 맵)   L : 할당 연결선 · 중복 추적   H : 전체 맵 범례
 - V : 센서 범위 (UAV 색 반투명) · 통신 범위 (UAV 색 점선 사각형) — 선택 UAV 가 있으면 그 UAV 만, 없으면 전체
 
-결정은 기본적으로 규칙 정책 (policies/role_rules.py), M 키로 rules -> random -> model. 체크포인트를 불러오면
-eval_common/checkpoint_policy.py 를 통해 학습된 정책이 구동한다.
+결정 정책 (Model 창 / M 키, gui/model_library.py): Source = Saved models (marl_models/best_model) / Training (marl_models/ 의 run).
+Saved: Combo [rule_rule_rule] = 규칙 정책 (모델 없음), [<role>_<rescue>_<explore>] = best_model/<조합>/model_vXX.
+Training: run (marl_models/<조합>_<시각>) -> 체크포인트 (best + 최근).
+조합 (구성요소 모드) 은 모델 경로 하나로 정해진다 (eval_common/model_loader.py: meta.json / run_meta.json, 없으면 fallback).
+정책 / 모델을 바꾸면 같은 맵 · 조난자로 에피소드를 처음부터 다시 시작.
 화면의 모든 위치 표기는 월드 좌표 (x, y) 이다 (env/core/coords.py: x 오른쪽, y 위쪽, 원점 = 맵 중앙).
 """
 import os
 import sys
-import glob
 import multiprocessing
 import queue
 import subprocess
@@ -46,6 +48,8 @@ from env.role.simulation import RoleSimulation
 from env.core.modes import Mode
 from env.core.knowledge import frontier_map
 from gui import style
+from gui.model_library import (RULE_COMBO, RunEntry, check_entry, run_checkpoints, saved_combos, saved_models,
+                               summary, training_runs)
 from gui.style import (STYLE, UI, Usage, cluster_color, draw_cell, draw_edges, draw_marker, draw_path, legend_icon,
                        font as style_font)
 
@@ -76,8 +80,6 @@ def _plot_worker(data, figures_dir, q):
 
 MAP_DIR = os.path.join("maps", "map")
 MAP_TARGET_DIR = os.path.join("maps", "map_target")
-# training/train.py 가 체크포인트를 저장하는 곳 (레포 루트/marl_models)
-MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "marl_models")
 
 INSPECTOR_WIDTH = 560          # inspector 패널 기본 폭 (main_gui.py INSPECTOR_WIDTH 로 바꾼다)
 MODE_NAME = {Mode.EXPLORE: "EXPLORE", Mode.RESCUE: "RESCUE", Mode.RETURN: "RETURN"}
@@ -113,7 +115,7 @@ class Button:
 class GridMap:
     def __init__(self, sim: RoleSimulation, cell_size=22, info_panel_width=340,
                  obs_panel_width=None, panel_height=104, extra_height=180, fps=60, font_size=None,
-                 model_policy=None, model_mode="greedy",
+                 model_mode="greedy", start=None,
                  figures_dir=None, auto_save_plots=False, speed_index=2, model_config=None):
         self.sim = sim
         obs_panel_width = obs_panel_width or INSPECTOR_WIDTH   # inspector 폭 (local / group 지도가 이 폭에 맞춰 커진다)
@@ -123,8 +125,14 @@ class GridMap:
         self.auto_save_plots = auto_save_plots
         self._plot_proc = None
         self._plot_q = None
-        # 결정 정책 (M 키로 rules -> random -> model). 모델을 받으면 model 로 시작
-        self.role_policy = "model" if model_policy is not None else "rules"
+        # 결정 정책 (Model 창 / M 키): current = None (Rule) 또는 ModelEntry (Saved model_vXX / Training 체크포인트).
+        # 조합 (role / rescue / explore 구성요소 모드) 은 모델 경로로 정해진다 (eval_common/model_loader.py). 학습 모델 정책은 캐시
+        self.current = None
+        self.sel = {"source": "saved", "combo": RULE_COMBO, "run": None}   # Model 창의 지금 선택
+        self.last_saved = {}                 # 조합 폴더 -> 마지막으로 고른 ModelEntry (M 키)
+        self._policy_cache = {}              # (checkpoint 경로, 수정 시각) -> LightPolicy
+        self.overlay_btns = []               # Model 창 버튼 [(Button, (종류, 값))]
+        self.episode_seed = 0                # 정책 전환 시 재시작 seed (sample 모드 행동 샘플링)
         self.event_log = []                  # 최근 결정 이벤트 (role 모드 우측 패널)
         self.event_log_lines = 8             # 패널에 보이는 이벤트 로그 줄 수 (공간이 남으면 더)
         self.show_clusters = False           # C: 전체 맵에 덩어리 · 구간 색칠 (G-2 규칙, 선택 UAV 시점)
@@ -134,13 +142,13 @@ class GridMap:
         self.use_main, self.use_personal = Usage(), Usage()   # 이번 프레임에 그린 요소 (범례)
         sim.recorder = AssignRecorder()
         sim.recorder.on_reset(sim)
-        self.model_mode = model_mode         # Model 버튼으로 불러올 때 행동 선택 방식 (greedy / sample)
-        self.model_config = model_config     # Model 버튼: 체크포인트와 네트워크 구조 비교용 (main 전용 yaml 의 custom_model_config)
+        self.model_mode = model_mode         # 학습 모델 행동 선택 방식 (greedy / sample)
+        self.model_config = model_config     # 체크포인트와 네트워크 구조 비교용 (GUI 전용 yaml 의 custom_model_config)
         self.rows, self.cols = sim.rows, sim.cols
         self.cs = cell_size
         self.panel_height = panel_height
         self.fps = fps
-        self.model_policy = model_policy
+        self.model_policy = None
         sim.keep_map = True      # GUI 의 Reset 은 같은 맵/조난자를 다시 재생 (새 맵은 Change Map)
 
         pygame.init()                        # 폰트 먼저 (inspector 텍스트 높이로 창 높이를 정한다)
@@ -177,7 +185,7 @@ class GridMap:
         self.playing = False
         self._frame = 0
         self.speeds = [16, 10, 6, 3, 1]      # auto-step interval in frames; smaller = faster
-        self.speed_idx = min(max(0, int(speed_index)), len(self.speeds) - 1)   # 초기 속도 (main 전용 yaml main.speed_index)
+        self.speed_idx = min(max(0, int(speed_index)), len(self.speeds) - 1)   # 초기 속도 (GUI 전용 yaml main.speed_index)
 
         self.dragging = False
         self.paint_value = None
@@ -190,7 +198,7 @@ class GridMap:
 
         self.status = ""
         self.status_timer = 0
-        self.overlay = None                  # None | "load" | "model"
+        self.overlay = None                  # None | "load" | "model" (Model 창: 정책 버튼 4 개 + 모델 목록)
         self.overlay_items = []
         self.overlay_rects = []
 
@@ -204,6 +212,8 @@ class GridMap:
         self._build_buttons()
         self.running = True
         os.makedirs(MAP_DIR, exist_ok=True)
+        self.sim.set_components({"role": "rule", "rescue": "rule", "explore": "rule"})
+        self._apply_start(dict(start or {}))
 
     # ---------- bottom-bar buttons ----------
 
@@ -272,25 +282,30 @@ class GridMap:
         self.buttons["Play"].text = "Pause" if self.playing else "Play"
 
     def _policy_label(self):
-        if self.role_policy == "model" and self.model_policy is not None:
-            path = getattr(self.model_policy, "checkpoint_path", "")
-            return "model-" + os.path.basename(os.path.dirname(path) or path)   # model-checkpoint_001500
-        return self.role_policy
+        """결과 폴더 이름용: rule / 조합 요약을 파일 이름으로 쓸 수 있게."""
+        if self.current is None:
+            return "rule"
+        return "".join(c if c.isalnum() or c in "_-" else "_" for c in summary(self.current))[:80].strip("_")
+
+    def policy_text(self, sep=" · "):
+        """화면 표시: Rule / "Saved · learn_learn_rule · model_v01" / "Training · learn_learn_rule_20261104_220048 ·
+        checkpoint_000300" (상태 메시지는 ASCII 만이라 sep=" - ")."""
+        return "Rule" if self.current is None else summary(self.current).replace(" · ", sep)
 
     def step_once(self):
         self.sim.recorder.policy = self._policy_label()
-        from policies.role_rules import RandomDecider, RuleDecider
-        if not hasattr(self, "_deciders"):
-            self._deciders = {"rules": RuleDecider(), "random": RandomDecider()}
-        if self.role_policy == "model" and self.model_policy is not None:
+        if not hasattr(self, "_rule"):
+            from policies.role_rules import RuleDecider
+            self._rule = RuleDecider()
+        if self.current is not None and self.model_policy is not None:
             try:
                 done, info = self.model_policy.step(self.sim)
             except Exception as e:
-                self._set_status(f"model inference failed -> rules: {e}")
-                self.role_policy = "rules"
+                self._set_status(f"model inference failed -> Rule: {e}")
+                self.set_rule()
                 return
         else:
-            done, info = self.sim.step(self._deciders[self.role_policy])
+            done, info = self.sim.step(self._rule)
         self._log_events(info)
         if done:
             self._set_status(f"episode done @t{info['time']}  "
@@ -328,7 +343,8 @@ class GridMap:
         path = self.sim.save_map_file(MAP_DIR, MAP_TARGET_DIR)
         self._set_status(f"saved: {path}")
 
-    def open_overlay(self, kind):
+    def open_overlay(self, kind, tab=None):
+        """kind = load (맵 파일) | model (Model 창, Source -> 조합 / Run 선택, tab 은 쓰지 않음)."""
         self.overlay = kind
         self.overlay_rects = []
         if kind == "load":
@@ -339,14 +355,129 @@ class GridMap:
                         if fn.endswith(".json"):
                             items.append((f"{d}/{fn}", os.path.join(d, fn)))
             self.overlay_items = items
+        else:                                                # Model 창: Saved model_vXX 또는 Training run · 체크포인트 목록
+            c = self.current                                 # 창을 열면 지금 정책의 선택을 보여 준다
+            if c is None:
+                self.sel.update(source="saved", combo=RULE_COMBO)
+            elif c.source == "saved":
+                self.sel.update(source="saved", combo=c.group)
+            else:
+                self.sel.update(source="training", run=c.group)
+            self._fill_model_items()
+
+    def _fill_model_items(self):
+        sel, items = self.sel, []
+        cur = self.current.checkpoint if self.current is not None else None
+        mark = lambda e: ("* " if cur and e.checkpoint == cur else "  ") + e.label()
+        if sel["source"] == "saved":
+            self._saved_combos = saved_combos()
+            if sel["combo"] not in self._saved_combos:
+                sel["combo"] = RULE_COMBO
+            for e in ([] if sel["combo"] == RULE_COMBO else saved_models(sel["combo"])):
+                check_entry(e, self.sim.cfg, self.model_config)
+                items.append((mark(e), e))
         else:
-            root = MODELS_DIR
-            ckpts = sorted(glob.glob(os.path.join(root, "**", "checkpoint-*"),
-                                     recursive=True))
-            ckpts = [c for c in ckpts if not c.endswith(".tune_metadata")]
-            self.overlay_items = [(os.path.relpath(c, root), c) for c in ckpts][-40:]
+            runs = training_runs()
+            for r in runs:
+                items.append((("> " if r.name == sel["run"] else "  ") + "Run: " + r.label(), r))
+                if r.name == sel["run"]:
+                    for e in run_checkpoints(r):
+                        check_entry(e, self.sim.cfg, self.model_config)
+                        items.append(("      " + mark(e), e))
+        self.overlay_items = items
+
+    # ---------- policy (Model 창: Rule / Saved model_vXX / Training 체크포인트) ----------
+
+    def _restart(self):
+        """정책 전환 후 같은 맵 · 조난자로 처음부터 (규칙 vs 모델을 같은 시나리오에서 비교)."""
+        self.reset_sim()
+        if self.model_policy is not None:
+            self.model_policy.seed(self.episode_seed)
+
+    def set_rule(self):
+        self.current, self.model_policy = None, None
+        self.sim.set_components({"role": "rule", "rescue": "rule", "explore": "rule"})
+        self._restart()
+        self._set_status("policy: Rule")
+
+    def select_entry(self, entry):
+        """entry (ModelEntry) 로 전환 — 조합은 모델 경로로 자동 구성 (role / rescue / explore: rule | learn).
+        로드 불가면 이유를 보여 주고 이전 정책 유지. 반환 성공 여부."""
+        from eval_common.checkpoint_policy import SHAPE_KEYS
+        err = check_entry(entry, self.sim.cfg, self.model_config)
+        policy = self._policy_cache.get(entry.key())
+        if err is None and policy is None:
+            try:
+                from eval_common.light_policy import LightPolicy
+                policy = LightPolicy(entry.path, mode=self.model_mode)
+                self._policy_cache[entry.key()] = policy
+            except Exception as e:
+                entry.error = err = str(e).split("\n")[0][:300]
+        if err is not None:
+            print(f"[gui] {entry.name}: cannot load — {err}")
+            self._set_status(f"{entry.name}: cannot load ({err}) - keeping {self.policy_text(' - ')}", frames=900)
+            return False
+        policy.prepare(dict(self.sim.cfg), free_keys=SHAPE_KEYS)    # GUI 설정 그대로 (구조 차이는 check_entry 가 이미 거름)
+        self.current, self.model_policy = entry, policy
+        if entry.source == "saved":
+            self.last_saved[entry.group] = entry
+        self.sim.set_components(policy.components)
+        self._restart()
+        self._set_status(f"policy: {self.policy_text(' - ')}  ({policy.describe()})", frames=600)
+        return True
+
+    def _combos(self):
+        """M 키 순환 조합: rule_rule_rule -> best_model 의 조합 폴더 (이름 순, 로드 가능한 모델이 있는 것만 — structure mismatch
+        모델만 있는 폴더는 건너뜀)."""
+        return [RULE_COMBO] + [c for c in saved_combos() if any(e.error is None for e in saved_models(c))]
+
+    def cycle_policy(self):
+        """M 키: 지금 가능한 조합을 차례로. Saved 조합은 마지막으로 고른 model_vXX (없으면 가장 최근 버전)."""
+        combos = self._combos()
+        now = RULE_COMBO if self.current is None else (self.current.group if self.current.source == "saved" else "-")
+        nxt = combos[(combos.index(now) + 1) % len(combos)] if now in combos else combos[0]
+        if nxt == RULE_COMBO:
+            self.set_rule()
+            return
+        entry = self.last_saved.get(nxt) or ([e for e in saved_models(nxt) if e.error is None] or [None])[-1]
+        if entry is not None:
+            self.select_entry(entry)
+
+    def _apply_start(self, start):
+        """시작 조합 (GUI config main: 의 source / combo / model / run / checkpoint, main_gui.py CLI 가 우선)."""
+        src, entry = start.get("source") or "saved", None
+        combo = start.get("combo") or RULE_COMBO
+        if src == "saved" and combo != RULE_COMBO:
+            models = saved_models(combo)
+            entry = next((e for e in models if e.name == start.get("model")), None) if start.get("model") else \
+                (models[-1] if models else None)
+            if entry is None:
+                print(f"[gui] start: no saved model {start.get('model') or ''} in best_model/{combo} -> Rule")
+        elif src == "training":
+            run = next((r for r in training_runs() if r.name == start.get("run")), None)
+            if run is None:
+                print(f"[gui] start: run {start.get('run')!r} not found under marl_models/ -> Rule")
+            else:
+                cks = run_checkpoints(run)
+                want = start.get("checkpoint") or "best"
+                entry = next((e for e in cks if e.name == want or e.name.startswith(want + " ")), None) or \
+                    (cks[0] if cks and not start.get("checkpoint") else None)
+                if entry is None:
+                    print(f"[gui] start: checkpoint {want!r} not found in {run.name} -> Rule")
+        if entry is not None and not self.select_entry(entry):
+            print(f"[gui] start: {entry.name} cannot be loaded -> Rule: {entry.error}")
 
     def _pick_overlay(self, pos):
+        if self.overlay == "model":                          # Source / 조합 버튼
+            for btn, (what, val) in self.overlay_btns:
+                if btn.rect.collidepoint(pos):
+                    if what == "combo" and val == RULE_COMBO:   # rule_rule_rule = 모델 없이 규칙 정책
+                        self.overlay = None
+                        self.set_rule()
+                        return
+                    self.sel[what] = val
+                    self._fill_model_items()
+                    return
         for rect, path in self.overlay_rects:
             if rect.collidepoint(pos):
                 if self.overlay == "load":
@@ -356,17 +487,13 @@ class GridMap:
                     except ValueError as e:          # 예: main 의 depot 이 이 맵에선 장애물 칸
                         self._set_status(f"load failed: {e}")
                     self.reset_sim()
+                elif isinstance(path, RunEntry):             # Training: run 을 고르면 그 run 의 체크포인트 목록
+                    self.sel["run"] = None if self.sel["run"] == path.name else path.name
+                    self._fill_model_items()
+                    return
                 else:
-                    try:
-                        from eval_common.checkpoint_policy import CheckpointPolicy
-                        # GUI sim 의 설정 (main 전용 yaml) 을 그대로 쓴다. 관측 차원 / 네트워크 구조가 다르면 에러
-                        policy = CheckpointPolicy(path, env_config=dict(self.sim.cfg), mode=self.model_mode,
-                                                  model_config=self.model_config, env_priority=True)
-                        self.model_policy = policy
-                        self.role_policy = "model"
-                        self._set_status(f"model loaded: {os.path.basename(path)}  {policy.describe()}", frames=600)
-                    except Exception as e:
-                        self._set_status(f"model load failed: {e}")
+                    self.overlay = None
+                    self.select_entry(path)                  # path = ModelEntry
                 self.overlay = None
                 return
         self.overlay = None
@@ -597,9 +724,9 @@ class GridMap:
         help_txt = (f"[C] segments {onoff(self.show_clusters)}   [L] links {onoff(self.show_links)}   "
                     f"[V] ranges {onoff(self.show_ranges)}   [P] path {onoff(self.show_path)}   "
                     f"[H] legend {onoff(self.show_legend)}"
-                    "   [Tab/1-9/click] select  [Esc] deselect  [M] rules/random/model  [G] plots")
+                    "   [Tab/1-9/click] select  [Esc] deselect  [M] cycle combinations  [G] plots")
         surf.blit(self.f_xs.render(help_txt, True, UI["subtext"]), (self._gt_max_val_x + 110, y + 3))
-        surf.blit(self.f_sm.render(f"policy: {self.role_policy}", True, UI["accent"]), (self.screen_width - 200, y))
+        surf.blit(self.f_sm.render(f"policy: {self.policy_text()}", True, UI["accent"]), (self.screen_width - 260, y))
         if self.status_timer > 0:
             surf.blit(self.f_sm.render(self.status, True, UI["text"]), (self._status_x, self.content_h + 16))
             self.status_timer -= 1
@@ -1061,12 +1188,17 @@ class GridMap:
         surf.blit(shade, (0, 0))
         pygame.draw.rect(surf, UI["overlay_bg"], o, border_radius=8)
         pygame.draw.rect(surf, UI["text"], o, width=2, border_radius=8)
-        title = "Load map  (Esc)" if self.overlay == "load" else "Load checkpoint from marl_models/  (Esc)"
+        title = "Load map  (Esc)" if self.overlay == "load" else f"Model   (current: {self.policy_text()})   (Esc)"
         surf.blit(self.f.render(title, True, UI["text"]), (o.x + 16, o.y + 14))
         self.overlay_rects = []
         iy = o.y + 48
+        if self.overlay == "model":                          # Source / 조합 버튼 줄 + 목록
+            iy = self._draw_model_buttons(o, iy)
         if not self.overlay_items:
-            surf.blit(self.f_sm.render("(none)", True, UI["subtext"]), (o.x + 16, iy))
+            empty = "(none)" if self.overlay == "load" else \
+                ("rule_rule_rule = rule policy (no model)" if self.sel["source"] == "saved" and self.sel["combo"] == RULE_COMBO
+                 else "no models")
+            surf.blit(self.f_sm.render(empty, True, UI["subtext"]), (o.x + 16, iy))
             return
         for name, path in self.overlay_items:
             ir = pygame.Rect(o.x + 8, iy, o.w - 16, 28)
@@ -1077,6 +1209,38 @@ class GridMap:
             surf.blit(self.f_sm.render(name[-90:], True, UI["text"]), (ir.x + 8, ir.y + 5))
             self.overlay_rects.append((ir, path))
             iy += 29
+
+    def _draw_model_buttons(self, o, iy):
+        """Model 창 버튼 줄: Source [Saved models] [Training] / Saved: Combo [rule_rule_rule] [best_model 의 조합 폴더 ...] (넘치면
+        다음 줄로). 반환 다음 줄 y."""
+        surf, sel = self.screen, self.sel
+        self.overlay_btns = []
+
+        def row(label, opts, y):
+            surf.blit(self.f_sm.render(label, True, UI["subtext"]), (o.x + 16, y + 7))
+            bx = o.x + 110
+            for text, key, on in opts:
+                w = self.f_sm.size(text)[0] + 24
+                if bx + w > o.right - 16 and bx > o.x + 110:      # 줄 바꿈
+                    bx, y = o.x + 110, y + 38
+                b = Button((bx, y, w, 30), text, self.f_sm, toggle=True)
+                b.on = on
+                b.draw(surf)
+                self.overlay_btns.append((b, key))
+                bx += w + 10
+            return y + 38
+        iy = row("Source", [("Saved models", ("source", "saved"), sel["source"] == "saved"),
+                            ("Training", ("source", "training"), sel["source"] == "training")], iy)
+        if sel["source"] == "saved":
+            combos = [RULE_COMBO] + getattr(self, "_saved_combos", saved_combos())
+            iy = row("Combo", [(c, ("combo", c), sel["combo"] == c) for c in combos], iy)
+            hint = "best_model/<role>_<rescue>_<explore>/model_vXX  (* = current)" if sel["combo"] != RULE_COMBO else ""
+        else:
+            hint = "runs under marl_models/ (click a run for its checkpoints, * = current)"
+        if hint:
+            surf.blit(self.f_xs.render(hint, True, UI["subtext"]), (o.x + 16, iy))
+            iy += 22
+        return iy
 
     def save_assign_plots(self):
         """지금까지 기록된 에피소드로 분석 그래프 저장 -> 폴더를 OS 뷰어로 연다.
@@ -1208,10 +1372,8 @@ class GridMap:
             if ev.key == pygame.K_SPACE: self.toggle_play(); return
             if ev.key in (pygame.K_n, pygame.K_RIGHT): self.step_once(); return
             if ev.key == pygame.K_r: self.reset_sim(); return
-            if ev.key == pygame.K_m:                         # rules -> random -> model (불러왔으면) -> rules
-                cycle = ["rules", "random"] + (["model"] if self.model_policy is not None else [])
-                self.role_policy = cycle[(cycle.index(self.role_policy) + 1) % len(cycle)]
-                self._set_status(f"policy: {self.role_policy}")
+            if ev.key == pygame.K_m:                         # Rule -> Role -> Role + Task -> Training (마지막 모델, 없으면 Model 창)
+                self.cycle_policy()
                 return
             if pygame.K_1 <= ev.key <= pygame.K_9:
                 idx = ev.key - pygame.K_1

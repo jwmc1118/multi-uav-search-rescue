@@ -2,8 +2,8 @@
 
     python -m tests.role.smoke_role_policy
 
-1) policy_mode (role, task) 3 조합 x (rollout -> 표본 종류별 GAE -> learn_on_batch 2 회): NaN 없음, head / 표본 종류별
-   stats 키, rule head 는 마스크 0
+1) 구성요소 (role, task) 3 조합 (env_config.components) x (rollout -> 네트워크별 SMDP GAE -> learn_on_batch 2 회): NaN 없음,
+   네트워크별 stats 키, rule 네트워크는 마스크 0 (learn 이 없는 조합은 업데이트 생략)
 2) 학습 재생: SampleBatch.ACTIONS 로 순차 디코딩을 재생한 logits = rollout logits (결정한 head / 에이전트에서)
    + 모델이 계산한 explore 1 단계 결정 (s1) · RESCUE 할당 = env 가 실제로 한 결정 (explore_valid_s1 / rescue 결정), 마스크 위반 0
 3) 모델 파라미터가 N 과 무관 (N=4 / N=5 state_dict shape 동일), N=4 가중치를 N=5 모델에 실어 한 에피소드 실행
@@ -23,13 +23,11 @@ from training.role.ppo import RolePPOTorchPolicy
 from training.config_loader import load_config
 
 STEPS = 120
-COMBOS = [("rule", "rule"), ("learned", "rule"), ("learned", "learned")]         # (role, task)
-KINDS = ("role", "rescue", "explore")                                             # 표본 종류 (= value head)
-STAT = {"role": "role", "rescue": "task_rescue", "explore": "task_explore"}
-HEAD_KEYS = [f"{s}_{STAT[h]}" for h in KINDS
-             for s in ("vf_explained_var", "vf_loss", "entropy", "n_decisions", "value_target_mean", "value_target_std",
-                       "value_norm_mean")] + \
-            [f"{s}_{h}" for h in ("role", "task") for s in ("policy_loss", "kl", "approx_kl", "clip_frac")]
+COMBOS = [("rule", "rule"), ("learn", "rule"), ("learn", "learn")]         # (role, task)
+KINDS = ("role", "rescue", "explore")                                             # 네트워크 (stats · 결정 수)
+HEAD_KEYS = [f"{s}_{k}" for k in KINDS
+             for s in ("entropy", "n_decisions", "vf_explained_var", "vf_loss", "value_target_mean", "value_target_std",
+                       "value_norm_mean", "policy_loss", "kl", "approx_kl", "clip_frac")]
 ACT_ORDER = ("role", "task")
 
 
@@ -45,7 +43,9 @@ def base_config(n_agents=None, mode=None):
     if n_agents:
         cfg["env_config"]["agents"] = [dict(cfg["env_config"]["agents"][0]) for _ in range(n_agents)]
     if mode:
-        cfg["env_config"]["policy_mode"] = dict(zip(("role", "task"), mode))
+        comp = {"role": mode[0], "rescue": mode[1], "explore": mode[1]}
+        cfg["env_config"]["components"] = comp
+        cfg["model"].setdefault("custom_model_config", {})["components"] = comp
     return cfg
 
 
@@ -69,8 +69,8 @@ def collect(env, prep, policy, seed=0):
         s1_m = st["s1"][0].cpu().numpy()
         res_m = st["rescue"][0].cpu().numpy()
         nobs, r, done, info = env.step(act)
-        mode = env.sim.policy_mode
-        if mode["role"] == "learned" and mode["explore"] == "learned":   # 모델 = env 결정 경로가 같아야 하는 조합
+        mode = env.sim.head_mode
+        if mode["role"] == "learn" and mode["explore"] == "learn":   # 모델 = env 결정 경로가 같아야 하는 조합
             mism["steps"] += 1
             mism["s1"] += int(np.any(s1_m != (np.asarray(info["explore_valid_s1"]) > 0)))
             mism["s1_n"] += int(np.sum(info["explore_valid_s1"]))
@@ -128,9 +128,13 @@ def check_combos():
         dec = {h: int(np.sum(batch[f"{h}_train_mask"])) for h in KINDS}
         pm = dict(zip(("role", "task"), mode))
         for h in KINDS:
-            if pm["role" if h == "role" else "task"] == "rule":
+            head = "role" if h == "role" else "task"
+            if pm[head] == "rule":
                 assert dec[h] == 0 and np.sum(batch[f"{h}_value_mask"]) == 0, (mode, h)
         err = check_replay(policy, batch)
+        if "learn" not in mode:                                        # 학습할 구성요소 없음 (rule 네트워크는 학습 파라미터 없음)
+            print(f"[1] (role, task) {mode}: decisions {dec}  (no learn component — update skipped)  replay max|Δlogit| {err:.1e}")
+            continue
         for _ in range(2):
             st = policy.learn_on_batch(batch)
         ls = st.get("learner_stats", st)
@@ -144,8 +148,7 @@ def check_combos():
         print(f"    model vs env decisions: steps {mm['steps']}, explore s1 {mm['s1_n']} / RESCUE {mm['res_n']} decisions, "
               f"mismatched steps s1 {mm['s1']} / rescue {mm['res']}")
         print(f"[1] (role, task) {mode}: decisions {dec}  total_loss {float(ls['total_loss']):.4f}  "
-              f"ev role/task-res/task-exp {float(ls['vf_explained_var_role']):+.2f}/"
-              f"{float(ls['vf_explained_var_task_rescue']):+.2f}/{float(ls['vf_explained_var_task_explore']):+.2f}  "
+              f"ev role/rescue/explore " + "/".join(f"{float(ls[f'vf_explained_var_{k}']):+.2f}" for k in KINDS) + "  "
               f"replay max|Δlogit| {err:.1e}")
 
 

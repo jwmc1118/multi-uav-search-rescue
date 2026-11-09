@@ -1,23 +1,23 @@
-"""학습 그래프 (논문용) — result.json / progress(_prev).csv 와 평가 기록 (eval_latest.json, rule_eval.json) 으로 그림 6 개
-(논문용 5 개 + 진단 1 개).
+"""학습 그래프 (논문용) — result.json / progress(_prev).csv 와 학습 모델의 평가 기록 (eval_latest.json) 으로 그림 6 개
+(논문용 5 개 + 진단 1 개). 기준선 정책은 실행하지 않는다 — 기준선 구조율은 env.yaml eval.baselines 의 숫자
+(조합 이름: rule_rule_rule / learn_rule_rule / learn_learn_learn, null 은 표시 안 함, 색 · 선 스타일 = training/behavior.py BASELINES).
 
-    fig_training_performance  (a) 고정 seed 평가 구조율 (평균 ± std, rule baseline, best) (b) 학습 에피소드 구조 · 만료 · 발견율
+    fig_training_performance  (a) 고정 seed 평가 구조율 (평균 ± std, 기준선 수평선, best) (b) 학습 에피소드 구조 · 만료 · 발견율
                               (c) 평균 에피소드 길이 (d) 평균 구조 시각 (발견 -> 구조 step)
-                              (e) learned - rule 짝 비교 (같은 고정 seed 의 seed 별 구조율 차이 평균 · bootstrap 95 % CI)
+                              (e) 평가 구조율 − 각 기준선 (평가 iteration 마다, 기준선이 모두 null 이면 숨김)
                               (f) UAV 당 에피소드 역할 전환 수 (자발적 / 강제)
-    fig_rewards               head 별 한 행, 항목별 한 패널 (UAV 당 에피소드 합): Role 합계 | 팀 항 | 늦지 않은 발견 | 전환 penalty /
-                              Rescue 합계 | (n_suc - F_excess)/N_T | 보너스 | 중복 penalty / Explore 합계 | 직접 탐색 (배율 적용
-                              후) | 정보 공유 | 직접 탐색 step 의 평균 배율 1 + w_omega ω^g
-    fig_learning              (a) critic explained variance (value head 별) (b) 정책 entropy (c) iteration 당 결정 (학습 표본) 수
-                              — 선 3 개: role / task–rescue / task–explore (entropy · 표본 수는 할당 표본의 역할별)
-    fig_behavior              최근 평가 (고정 seed, greedy) 의 에피소드 진행률 10 % 구간 평균 (규칙 정책 = 같은 seed):
-                              (a) 역할 비율 learned (b) 역할 비율 rule (c) 누적 발견 · 구조율 (d) 평균 그룹 연결도 ω^g
-                              (e) 귀환 시작 시점의 남은 용량 분포 (f) iteration 별 에피소드 평균 역할 비율
-    fig_undiscovered          최근 평가에서 끝까지 발견 못 한 생존자 위치 (여러 seed 누적, learned / rule 두 패널)
-    fig_diagnostics           (진단, 논문용 아님) head 별 approx KL · clip 비율, 결정 시점 메모리 노드 수 · 평균 age
+    fig_rewards               항목별 한 패널 (UAV 당 에피소드 합, 패널마다 y 범위 독립): Role 합계 | 팀 항 | 늦지 않은 발견 |
+                              전환 penalty / Rescue 합계 | 대기 | 발견 후 만료 | 할당 충돌 | 목표 전환 / Explore 합계 | 미발견 |
+                              목표 전환 (rule 인 구성요소 행은 제목에 (rule))
+    fig_learning              (a) critic explained variance (V^role / V^res / V^exp) (b) 정책 entropy (c) iteration 당 결정
+                              (학습 표본) 수 — 네트워크별 role / rescue / explore 세 줄 (learn 이 아닌 구성요소 줄은 숨김, run_meta.json)
+    fig_behavior              최근 평가 (고정 seed, greedy, 학습 모델) 의 에피소드 진행률 10 % 구간 평균:
+                              (a) 역할 비율 (b) 누적 발견 · 구조율 (c) 평균 그룹 연결도 ω^g
+                              (d) 귀환 시작 시점의 남은 용량 분포 (e) iteration 별 에피소드 평균 역할 비율
+    fig_undiscovered          최근 평가에서 끝까지 발견 못 한 생존자 위치 (여러 seed 누적, 학습 모델)
+    fig_diagnostics           (진단, 논문용 아님) 네트워크별 approx KL · clip 비율, 결정 시점 메모리 노드 수 · 평균 age
 각 그림은 .png (dpi 200) + .pdf. 원시값은 얇고 연하게 (alpha 0.25), EMA (창 = env.yaml plot.ema_window) 는 진하게. 보조 축 없음,
-범위 음영은 평가 ± std 만. 값이 없는 패널은 "no data". 규칙 정책 기록은 평가와 같은 고정 seed 로 한 번 계산해 rule_eval.json 에 캐시
-(training/behavior.py rule_reference). train.py 가 --plot-every iteration 마다 save_figures 를 부른다.
+범위 음영은 평가 ± std 만. 값이 없는 패널은 "no data". train.py 가 --plot-every iteration 마다 save_figures 를 부른다.
 """
 import csv
 import json
@@ -27,6 +27,8 @@ import matplotlib
 matplotlib.use("Agg")   # 화면 없이 파일로만 그린다
 import matplotlib.pyplot as plt
 import numpy as np
+
+from env.role.simulation import EXPLORE_ITEMS, RESCUE_ITEMS  # noqa: E402  (fig_rewards Rescue / Explore 합계 항목)
 
 _STATS = "info/learner/default_policy/learner_stats/"
 
@@ -93,25 +95,12 @@ def read_progress(logdir):
     return [by_it[k] for k in sorted(by_it)]
 
 
-def greedy_baseline():
-    """fig_training_performance (a) 의 rule baseline = yaml eval.greedy_baseline (training/config/env.yaml). 없으면 None."""
-    try:
-        from training.config_loader import load_config
-        return (load_config().get("eval") or {}).get("greedy_baseline")
-    except Exception:
-        return None
-
-
-
 CM = "custom_metrics/"
-HEAD_COLOR = {"role": "#1f77b4", "rescue": "#ff7f0e", "explore": "#2ca02c"}           # 파랑 / 주황 / 초록
-LEARN_LINES = (("role", "role", HEAD_COLOR["role"]), ("task_rescue", "task–rescue", HEAD_COLOR["rescue"]),
-               ("task_explore", "task–explore", HEAD_COLOR["explore"]))             # fig_learning 선 (stats 이름, 범례, 색)
-POLICY_HEAD_COLOR = {"role": "#1f77b4", "task": "#9467bd"}                            # fig_diagnostics head 색
+HEAD_COLOR = {"role": "#1f77b4", "rescue": "#ff7f0e", "explore": "#2ca02c"}   # 네트워크 색: 파랑 / 주황 / 초록
+NET_LABEL = {"role": "role", "rescue": "rescue", "explore": "explore"}
 ROLE_COLOR = {"explore": "#2ca02c", "rescue": "#ff7f0e", "return": "#7f7f7f"}         # EXPLORE 초록 / RESCUE 주황 / RETURN 회색
 OUT_COLOR = {"rescue": "#1f77b4", "expire": "#d62728", "found": "#2ca02c"}            # 구조 파랑 / 만료 빨강 / 발견 초록
 SWITCH_COLOR = {"voluntary": "#9467bd", "forced": "#8c564b"}                      # 자발적 보라 / 강제 갈색
-SRC_STYLE = {"learned": "-", "rule": "--"}                                            # 학습 모델 실선 / 규칙 정책 점선 (범례에 표기)
 FIGS = ("fig_training_performance", "fig_rewards", "fig_learning", "fig_behavior", "fig_undiscovered", "fig_diagnostics")
 
 
@@ -179,36 +168,11 @@ def _save(fig, logdir, name):
 
 # ---------------------------------------------------------------- 평가 기록
 
-def _env_config(logdir):
-    try:
-        with open(os.path.join(logdir, "params.json")) as f:
-            return json.load(f).get("env_config")
-    except (OSError, ValueError):
-        return None
-
-
 def _load_json(logdir, name):
     try:
         with open(os.path.join(logdir, name)) as f:
             return json.load(f)
     except (OSError, ValueError):
-        return None
-
-
-def rule_records(logdir, n_seeds):
-    """같은 고정 seed (0 .. n_seeds - 1) 의 규칙 정책 에피소드 기록. 평가가 만든 rule_eval.json (seed 수가 같으면) 을 그대로
-    쓰고, 없으면 params.json 의 env_config 로 한 번 계산해 캐시 (training/behavior.py rule_reference). 못 구하면 None."""
-    from training.behavior import RULE_CACHE, rule_reference
-    cached = _load_json(logdir, RULE_CACHE)
-    if cached and int(cached.get("n_seeds", -1)) == int(n_seeds):
-        return cached["episodes"]
-    env = _env_config(logdir)
-    if env is None:
-        return None
-    try:
-        return rule_reference(env, n_seeds, logdir)
-    except Exception as e:                                                  # 규칙 정책 기록 실패는 그 곡선 · 패널만 빠짐
-        print(f"[plot] rule records skipped: {e}")
         return None
 
 
@@ -244,7 +208,34 @@ def _eval_points(rows, x, keys):
     return [x[i] for i in idx], {k: np.array([cols[k][i] for i in idx]) for k in keys}
 
 
-def fig_training_performance(logdir, rows, x, baseline, window):
+def _baselines(baselines):
+    """config eval.baselines -> [(키, 값)] (null 제외, BASELINES 순서)."""
+    from training.behavior import BASELINES
+    b = baselines or {}
+    return [(k, float(b[k])) for k in BASELINES if b.get(k) is not None]
+
+
+def _baseline_diff_panel(a, rows, x, baselines):
+    """(e) 평가 iteration 마다 학습 평가 평균 − 각 기준선 (config 숫자), 0 점선. CI 없음."""
+    from training.behavior import BASELINES
+    title, ylabel = "Learned − baselines (evaluation rescue rate)", "rescue rate difference (/N_T)"
+    px, v = _eval_points(rows, x, ("eval/rescue_rate",))
+    if not px:
+        _no_data(a, title, ylabel=ylabel)
+        return
+    for k, b in baselines:
+        name, color, ls = BASELINES[k]
+        a.plot(px, v["eval/rescue_rate"] - b, color=color, lw=1.8, ls=ls, marker="o", ms=3, label=f"learned − {name}")
+    a.axhline(0.0, color="0.5", lw=1.0, ls=":")
+    a.set_title(title)
+    a.set_xlabel("training iteration")
+    a.set_ylabel(ylabel)
+    a.legend(loc="best")
+
+
+def fig_training_performance(logdir, rows, x, baselines, window):
+    from training.behavior import BASELINES
+    base = _baselines(baselines)
     fig, ax = plt.subplots(2, 3, figsize=(16, 7.5))
     a = ax[0][0]
     t_a = "Evaluation rescue rate (fixed seeds, greedy)"
@@ -253,8 +244,9 @@ def fig_training_performance(logdir, rows, x, baseline, window):
         pr, ps = v["eval/rescue_rate"], np.nan_to_num(v["eval/rescue_rate_std"])
         a.plot(px, pr, color=OUT_COLOR["rescue"], lw=1.8, marker="o", ms=3, label="learned (mean)")
         a.fill_between(px, pr - ps, pr + ps, color=OUT_COLOR["rescue"], alpha=0.2, linewidth=0, label="learned ± std")
-        if baseline is not None:
-            a.axhline(float(baseline), color="0.3", lw=1.2, ls="--", label="rule baseline (same seeds)")
+        for k, b in base:
+            name, color, ls = BASELINES[k]
+            a.axhline(b, color=color, lw=1.2, ls=ls, label=f"{name} ({b:.3f})")
         b = _best(rows)
         if b:
             a.plot([b[0]], [b[1]], marker="*", ms=13, color="#d62728", ls="none", label=f"best (iter {b[0]})")
@@ -272,21 +264,10 @@ def fig_training_performance(logdir, rows, x, baseline, window):
            "Mean episode length", "steps", window)
     _panel(ax[1][0], x, rows, [(CM + "known_to_rescue_mean", "discovery -> rescue", OUT_COLOR["rescue"])],
            "Mean rescue time of rescued survivors", "steps (discovery -> rescue)", window)
-    a = ax[1][1]
-    t_e = "Learned − rule rescue rate (paired by seed)"
-    px, v = _eval_points(rows, x, ("eval/diff_mean", "eval/diff_lo", "eval/diff_hi"))
-    if px:
-        m = v["eval/diff_mean"]
-        err = np.vstack([m - v["eval/diff_lo"], v["eval/diff_hi"] - m])
-        a.errorbar(px, m, yerr=err, color=HEAD_COLOR["role"], lw=1.8, marker="o", ms=3, capsize=3,
-                   label="mean difference (95 % bootstrap CI)")
-        a.axhline(0.0, color="0.3", lw=1.2, ls="--", label="no difference")
-        a.set_title(t_e)
-        a.set_xlabel("training iteration")
-        a.set_ylabel("rescue rate difference (/N_T)")
-        a.legend(loc="best")
+    if base:
+        _baseline_diff_panel(ax[1][1], rows, x, base)
     else:
-        _no_data(a, t_e, ylabel="rescue rate difference (/N_T)")
+        ax[1][1].axis("off")
     _panel(ax[1][2], x, rows, [(CM + "switch_voluntary_mean", "voluntary", SWITCH_COLOR["voluntary"]),
                                (CM + "switch_forced_mean", "forced", SWITCH_COLOR["forced"])],
            "Role switches per UAV per episode", "switches per UAV per episode", window)
@@ -298,13 +279,12 @@ def fig_training_performance(logdir, rows, x, baseline, window):
 REWARD_ROWS = (
     ("role", "Role", [("total", ("role_team", "role_discover", "role_switch")), ("(|ΔR| − w_x|ΔE|)/N_T", ("role_team",)),
                       ("timely discovery", ("role_discover",)), ("switch penalty", ("role_switch",))]),
-    ("rescue", "Rescue", [("total", ("rescue_sf", "rescue_bonus", "rescue_dup")), ("(n_suc − F_excess)/N_T", ("rescue_sf",)),
-                          ("bonus", ("rescue_bonus",)), ("duplicate penalty", ("rescue_dup",))]),
-    ("explore", "Explore", [("total", ("explore_direct", "explore_share")),
-                            ("direct (× multiplier)", ("explore_direct",)),
-                            ("information sharing", ("explore_share",)),
-                            ("multiplier 1 + w_ω ω^g", "explore_mult")]),
-)                                       # 키가 문자열이면 보상 항목이 아닌 custom metric (그 패널은 단위 없는 배율)
+    ("rescue", "Rescue", [("total", RESCUE_ITEMS), ("wait", ("task_wait",)), ("found expiry", ("task_found_expire",)),
+                          ("assignment conflict", ("task_conflict",)), ("target switch", ("task_switch_rescue",))]),
+    ("explore", "Explore", [("total", EXPLORE_ITEMS), ("undiscovered", ("task_undiscovered",)),
+                            ("target switch", ("task_switch_explore",))]),
+)
+MODE_TAG = {"rule": " (rule)", "learn": ""}                                   # 학습하지 않는 구성요소 행 제목 꼬리
 
 
 def _sum_cols(rows, items):
@@ -316,6 +296,8 @@ def _sum_cols(rows, items):
 
 
 def fig_rewards(logdir, rows, x, window):
+    """Role / Rescue / Explore 행, 보상 항목별 패널. rule 인 구성요소 행은 제목에 (rule) (값은 로그용으로 유지)."""
+    modes = _modes(logdir)
     ncol = max(len(r[2]) for r in REWARD_ROWS)
     fig, ax = plt.subplots(len(REWARD_ROWS), ncol, figsize=(3.6 * ncol, 3.0 * len(REWARD_ROWS)), squeeze=False)
     for r, (head, name, items) in enumerate(REWARD_ROWS):
@@ -325,10 +307,9 @@ def fig_rewards(logdir, rows, x, window):
                 a.axis("off")
                 continue
             label, keys = items[c]
-            metric = isinstance(keys, str)
-            y = _col(rows, f"{CM}{keys}_mean") if metric else _sum_cols(rows, keys)
-            ylabel = "multiplier (per direct-exploration step)" if metric else "reward per UAV per episode"
-            title = f"{name}: {label}"
+            y = _sum_cols(rows, keys)
+            ylabel = "reward per UAV per episode"
+            title = f"{name}{MODE_TAG[modes[head]]}: {label}"
             if not _plot(a, x, y, HEAD_COLOR[head], label, window):
                 _no_data(a, title, ylabel=ylabel)
                 continue
@@ -341,25 +322,43 @@ def fig_rewards(logdir, rows, x, window):
 
 # ---------------------------------------------------------------- 그림 3
 
+def _modes(logdir):
+    """run 의 구성요소 모드 {role, rescue, explore: rule | learn} (run_meta.json -> 폴더 이름 -> params.json)."""
+    from eval_common.model_loader import components_from_meta
+    comp = components_from_meta(_load_json(logdir, "run_meta.json"), logdir, _load_json(logdir, "params.json"))
+    return {k: v["mode"] for k, v in comp.items()}
+
+
+def _nets(logdir):
+    """그릴 네트워크 (role / rescue / explore) — learn 인 구성요소만 (rule 은 학습 지표가 0 이라 뺀다)."""
+    modes = _modes(logdir)
+    return [k for k in HEAD_COLOR if modes[k] == "learn"]
+
+
+def _net_lines(nets, key):
+    return [(key.format(k), NET_LABEL[k], HEAD_COLOR[k]) for k in nets]
+
+
 def fig_learning(logdir, rows, x, window):
+    """(a) critic EV (V^role / V^res / V^exp) (b) 정책 entropy (c) train batch 당 학습 결정 수 — 네트워크별 (rule 인 네트워크 제외)."""
+    nets = _nets(logdir)
     fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
-    _panel(ax[0], x, rows, [(_STATS + f"vf_explained_var_{k}", lb, c) for k, lb, c in LEARN_LINES],
-           "Critic explained variance (per value head)", "explained variance", window)
-    _panel(ax[1], x, rows, [(_STATS + f"entropy_{k}", lb, c) for k, lb, c in LEARN_LINES],
-           "Policy entropy (per sample role)", "entropy (nats)", window)
-    _panel(ax[2], x, rows, [(CM + f"decisions_per_batch_{k}", lb, c) for k, lb, c in LEARN_LINES],
+    _panel(ax[0], x, rows, _net_lines(nets, _STATS + "vf_explained_var_{}"),
+           "Critic explained variance (per network)", "explained variance", window)
+    _panel(ax[1], x, rows, _net_lines(nets, _STATS + "entropy_{}"), "Policy entropy (per network)", "entropy (nats)", window)
+    _panel(ax[2], x, rows, _net_lines(nets, CM + "decisions_per_batch_{}"),
            "Training samples per iteration", "decisions per train batch", window)
     _save(fig, logdir, "fig_learning")
 
 
 def fig_diagnostics(logdir, rows, x, window):
-    """진단 (논문용 아님): head 별 approx KL · clip 비율, 결정 시점 메모리 노드 수 · 평균 age."""
+    """진단 (논문용 아님): 네트워크별 approx KL · clip 비율 (rule 인 네트워크 제외), 결정 시점 메모리 노드 수 · 평균 age."""
+    nets = _nets(logdir)
     fig, ax = plt.subplots(2, 2, figsize=(11, 7.5))
-    heads = tuple(POLICY_HEAD_COLOR)
-    _panel(ax[0][0], x, rows, [(_STATS + f"approx_kl_{h}", h, POLICY_HEAD_COLOR[h]) for h in heads],
-           "Approx. KL (old → new policy)", "approx KL (nats)", window)
-    _panel(ax[0][1], x, rows, [(_STATS + f"clip_frac_{h}", h, POLICY_HEAD_COLOR[h]) for h in heads],
-           "PPO clip fraction", "fraction of samples clipped", window)
+    _panel(ax[0][0], x, rows, _net_lines(nets, _STATS + "approx_kl_{}"), "Approx. KL (old → new policy)", "approx KL (nats)",
+           window)
+    _panel(ax[0][1], x, rows, _net_lines(nets, _STATS + "clip_frac_{}"), "PPO clip fraction", "fraction of samples clipped",
+           window)
     _panel(ax[1][0], x, rows, [(CM + "mem_nodes_mean", "memory nodes", "#7f7f7f")],
            "Memory nodes per decision", "nodes per decision graph", window)
     _panel(ax[1][1], x, rows, [(CM + "mem_age_mean", "memory age", "#7f7f7f")],
@@ -398,68 +397,51 @@ def _cap_hist(recs):
     return (tot / tot.sum() if tot.sum() > 0 else tot), int(tot.sum())
 
 
-def fig_behavior(logdir, rows, x, window, eval_seeds):
+def fig_behavior(logdir, rows, x, window):
     from training.behavior import N_BINS, mean_curves
     fig, ax = plt.subplots(2, 3, figsize=(16, 7.5))
+    ax[1][2].axis("off")
     prog = np.arange(N_BINS) * (100 / N_BINS) + 50 / N_BINS                # 구간 중앙 (%)
     it, learned = _eval_latest(logdir)
-    n_seeds = len(learned) if learned else eval_seeds
-    rule = rule_records(logdir, n_seeds)
     cur = mean_curves([r["curves"] for r in learned]) if learned else None
-    rc = mean_curves([r["curves"] for r in rule]) if rule else None
-    sub = f" — eval iter {it}" if it is not None else ""
-    _role_stack(ax[0][0], prog, cur, "(a) Role share over episode (learned)" + sub)
-    _role_stack(ax[0][1], prog, rc, f"(b) Role share over episode (rule, {n_seeds} seeds)")
-    a = ax[0][2]
-    t_c = "(c) Cumulative found / rescued over episode"
-    drawn = False
-    for src, data in (("learned", cur), ("rule", rc)):
-        if data:
-            ls = SRC_STYLE[src]
-            a.plot(prog, data["found"], color=OUT_COLOR["found"], lw=1.8, ls=ls, marker="o", ms=3, label=f"found ({src})")
-            a.plot(prog, data["rescued"], color=OUT_COLOR["rescue"], lw=1.8, ls=ls, marker="o", ms=3, label=f"rescued ({src})")
-            drawn = True
-    if drawn:
-        a.set_title(t_c)
+    sub = f" — eval iter {it}, {len(learned)} seeds" if learned and it is not None else ""
+    _role_stack(ax[0][0], prog, cur, "(a) Role share over episode" + sub)
+    a = ax[0][1]
+    t_b = "(b) Cumulative found / rescued over episode"
+    if cur:
+        a.plot(prog, cur["found"], color=OUT_COLOR["found"], lw=1.8, marker="o", ms=3, label="found")
+        a.plot(prog, cur["rescued"], color=OUT_COLOR["rescue"], lw=1.8, marker="o", ms=3, label="rescued")
+        a.set_title(t_b)
         a.set_xlabel(PROG_LABEL)
         a.set_ylabel("fraction of survivors (/N_T)")
         a.legend(loc="best")
     else:
-        _no_data(a, t_c, PROG_LABEL, "fraction of survivors (/N_T)")
-    a = ax[1][0]
-    t_d = "(d) Mean group connectivity over episode"
-    drawn = False
-    for src, data, color in (("learned", cur, HEAD_COLOR["role"]), ("rule", rc, "0.3")):
-        if data and _has(data["omega"]):
-            a.plot(prog, data["omega"], color=color, lw=1.8, ls=SRC_STYLE[src], marker="o", ms=3, label=src)
-            drawn = True
-    if drawn:
+        _no_data(a, t_b, PROG_LABEL, "fraction of survivors (/N_T)")
+    a = ax[0][2]
+    t_c = "(c) Mean group connectivity over episode"
+    if cur and _has(cur["omega"]):
+        a.plot(prog, cur["omega"], color=HEAD_COLOR["role"], lw=1.8, marker="o", ms=3)
         a.set_ylim(0, 1)
-        a.set_title(t_d)
+        a.set_title(t_c)
         a.set_xlabel(PROG_LABEL)
         a.set_ylabel("group connectivity ω^g")
-        a.legend(loc="best")
     else:
-        _no_data(a, t_d, PROG_LABEL, "group connectivity ω^g")
-    a = ax[1][1]
-    t_e = "(e) Remaining capacity at RETURN start"
-    hl, hr = _cap_hist(learned), _cap_hist(rule)
-    if hl or hr:
-        width = max(len(h[0]) for h in (hl, hr) if h)
-        caps = np.arange(width)
-        for k, (src, h, color) in enumerate((("learned", hl, HEAD_COLOR["role"]), ("rule", hr, "0.55"))):
-            if h:
-                a.bar(caps + (k - 0.5) * 0.4, np.pad(h[0], (0, width - len(h[0]))), width=0.4, color=color,
-                      label=f"{src} ({h[1]} returns)")
+        _no_data(a, t_c, PROG_LABEL, "group connectivity ω^g")
+    a = ax[1][0]
+    t_d = "(d) Remaining capacity at RETURN start"
+    h = _cap_hist(learned)
+    if h:
+        caps = np.arange(len(h[0]))
+        a.bar(caps, h[0], width=0.6, color=HEAD_COLOR["role"], label=f"{h[1]} returns")
         a.set_xticks(caps)
-        a.set_title(t_e)
+        a.set_title(t_d)
         a.set_xlabel("remaining capacity (supplies)")
         a.set_ylabel("share of RETURN starts")
         a.legend(loc="best")
     else:
-        _no_data(a, t_e, "remaining capacity (supplies)", "share of RETURN starts")
-    a = ax[1][2]
-    t_f = "(f) Role share during training (episode mean)"
+        _no_data(a, t_d, "remaining capacity (supplies)", "share of RETURN starts")
+    a = ax[1][1]
+    t_e = "(e) Role share during training (episode mean)"
     ys = {r: _col(rows, f"{CM}role_{r}_mean") for r in ROLE_COLOR}
     pts = [i for i in range(len(x)) if all(ys[r][i] == ys[r][i] for r in ROLE_COLOR)]
     if pts:
@@ -467,12 +449,12 @@ def fig_behavior(logdir, rows, x, window, eval_seeds):
         a.stackplot(xs, *[ema([ys[r][i] for i in pts], window) for r in ROLE_COLOR], colors=list(ROLE_COLOR.values()),
                     labels=[r.upper() for r in ROLE_COLOR], alpha=0.85, linewidth=0)
         a.set_ylim(0, 1)
-        a.set_title(t_f + f" (EMA {window})")
+        a.set_title(t_e + f" (EMA {window})")
         a.set_xlabel("training iteration")
         a.set_ylabel("share of UAV-steps")
         a.legend(loc="lower left")
     else:
-        _no_data(a, t_f, ylabel="share of UAV-steps")
+        _no_data(a, t_e, ylabel="share of UAV-steps")
     _save(fig, logdir, "fig_behavior")
 
 
@@ -498,34 +480,25 @@ def _undiscovered_panel(a, recs, title):
     a.legend(loc="upper right")
 
 
-def fig_undiscovered(logdir, eval_seeds):
+def fig_undiscovered(logdir):
     it, learned = _eval_latest(logdir)
-    rule = rule_records(logdir, len(learned) if learned else eval_seeds)
-    fig, ax = plt.subplots(1, 2, figsize=(14, 5.2))
-    _undiscovered_panel(ax[0], learned, "Learned" + (f" (eval iter {it})" if it is not None else ""))
-    _undiscovered_panel(ax[1], rule, "Rule")
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5.2))
+    _undiscovered_panel(ax, learned, "Learned" + (f" (eval iter {it})" if it is not None else ""))
     _save(fig, logdir, "fig_undiscovered")
 
 
-def save_figures(logdir, baseline=None, ema_window=10, eval_seeds=20):
+def save_figures(logdir, baselines=None, ema_window=10):
     """그림 6 개 (FIGS, .png + .pdf) 를 logdir 에 저장. 기록이 없으면 아무것도 안 함. 반환: 저장한 그림 이름.
-    fig_training_performance (a) 의 rule baseline = 같은 고정 seed 규칙 정책 구조율 평균 (rule_eval.json), 없으면 baseline
-    (yaml eval.greedy_baseline)."""
+    baselines = env.yaml eval.baselines ({rule_rule_rule, learn_rule_rule, learn_learn_learn: 구조율 또는 None})."""
     rows = read_progress(logdir)
     if not rows:
         return []
     _style()
     x = _col(rows, "training_iteration")
-    _, learned = _eval_latest(logdir)
-    rule = rule_records(logdir, len(learned) if learned else eval_seeds)
-    if rule:
-        baseline = float(np.mean([r["rescue_rate"] for r in rule]))
-    elif baseline is None:
-        baseline = greedy_baseline()
-    fig_training_performance(logdir, rows, x, baseline, ema_window)
+    fig_training_performance(logdir, rows, x, baselines, ema_window)
     fig_rewards(logdir, rows, x, ema_window)
     fig_learning(logdir, rows, x, ema_window)
-    fig_behavior(logdir, rows, x, ema_window, eval_seeds)
-    fig_undiscovered(logdir, eval_seeds)
+    fig_behavior(logdir, rows, x, ema_window)
+    fig_undiscovered(logdir)
     fig_diagnostics(logdir, rows, x, ema_window)
     return list(FIGS)

@@ -4,11 +4,14 @@ CheckpointPolicy (eval_common/checkpoint_policy.py) 와 같은 결정을 낸다:
     관측 = sim.rl_observation() -> RLlib 전처리기 (Dict 평탄화, 학습 config observation_filter = NoFilter) ->
     RoleModel (models/role/rllib_model.py, 학습과 같은 클래스) forward -> 모델이 순차 디코딩한 행동 (greedy = argmax,
     sample = 학습 때와 같은 샘플링) -> sim.step_explicit. RLlib 행동 분포는 모델 행동을 그대로 통과시키므로 생략해도 같다.
-가중치는 체크포인트 파일에서 한 번만 읽고 (read_weights), 실행 env_config 가 바뀌면 (UAV 수 N / 맵 / s_max) 모델만 새로
-만들어 같은 가중치를 싣는다 (모델 파라미터는 N · 맵 크기 · s_max 와 무관 — actor 는 strict, critic 은 shape 다르면 건너뜀).
+모델 경로 (best 모델 폴더 / 학습 체크포인트) 는 eval_common/model_loader.py load_model 로 읽는다 — 구성요소 모드
+(role / rescue / explore: rule | learn) 와 가중치를 한 번만 정하고,
+실행 env_config 가 바뀌면 (UAV 수 N / 맵 / s_max) 모델만 새로 만들어 같은 가중치를 싣는다 (모델 파라미터는 N · 맵 크기 ·
+s_max 와 무관 — 실행에 쓰는 actor (rule 이 아닌 구성요소) 는 strict, critic · rule 구성요소 네트워크는 shape 다르면 건너뜀).
+prepare 가 env_config 에 구성요소 모드를 넣는다 (rule 인 구성요소는 env 가 규칙 정책으로 결정, 모델도 그 네트워크를 호출하지 않음).
 
-    p = LightPolicy(checkpoint, mode="greedy")
-    env = p.prepare(env_config, free_keys=())      # 실행 env_config (SHAPE_KEYS 는 체크포인트 값, free_keys 제외) + 모델 준비
+    p = LightPolicy(model_path, mode="greedy")
+    env = p.prepare(env_config, free_keys=())      # 실행 env_config (SHAPE_KEYS 는 체크포인트 값, free_keys 제외, 구성요소 모드) + 모델 준비
     sim = RoleSimulation(env); p.seed(s); done, info = p.step(sim)
 """
 import copy
@@ -16,22 +19,24 @@ import random
 
 import numpy as np
 
-from eval_common.checkpoint_policy import (MODES, is_role_config, load_train_config, load_weights,
-                                           read_weights, runtime_env_config)
+from eval_common.checkpoint_policy import MODES, is_role_config, load_weights, runtime_env_config, components_config
 
 
 class LightPolicy:
     MODES = MODES
 
-    def __init__(self, checkpoint_path, mode="greedy"):
-        self.checkpoint_path = checkpoint_path
-        self.train_cfg = load_train_config(checkpoint_path)
+    def __init__(self, model_path, mode="greedy"):
+        from eval_common.model_loader import load_model
+        self.spec = load_model(model_path)
+        self.checkpoint_path = self.spec.checkpoint
+        self.components = self.spec.modes                 # {구성요소: rule | learn}
+        self.train_cfg = components_config(self.spec.train_cfg, self.components)
         if not is_role_config(self.train_cfg):
-            raise RuntimeError(f"예전 구조 체크포인트는 지원하지 않음: {checkpoint_path}")
+            raise RuntimeError(f"예전 구조 체크포인트는 지원하지 않음: {model_path}")
         if (self.train_cfg.get("observation_filter") or "NoFilter") != "NoFilter":
             raise RuntimeError(f"observation_filter={self.train_cfg['observation_filter']!r} — 경량 경로는 NoFilter 만 지원")
         self.train_env = self.train_cfg.get("env_config", {})
-        self.weights = read_weights(checkpoint_path)
+        self.weights = self.spec.weights
         self.trained_n = len(self.train_env.get("agents", []))
         self.name = "model"
         self._models = {}                                  # env 키 -> (prep, model, skipped)
@@ -45,8 +50,10 @@ class LightPolicy:
                 int(env.get("max_targets") or 0), order_alpha(env))
 
     def prepare(self, env_config, free_keys=()):
-        """실행 env_config 로 모델 준비 (같은 관측 shape 면 재사용). 반환 실제 env_config. self.warnings = 강제 키."""
-        run_env, self.warnings = runtime_env_config(self.train_env, env_config, free_keys)
+        """실행 env_config 로 모델 준비 (같은 관측 shape 면 재사용). 반환 실제 env_config (구성요소 모드 포함).
+        self.warnings = 강제 키."""
+        from eval_common.model_loader import env_with_components
+        run_env, self.warnings = runtime_env_config(self.train_env, env_with_components(env_config, self.components), free_keys)
         self.env_config = run_env
         key = self._key(run_env)
         if key not in self._models:
@@ -56,7 +63,6 @@ class LightPolicy:
         return run_env
 
     def _build(self, env_config):
-        import torch
         from ray.rllib.models import ModelCatalog
         from ray.rllib.models.catalog import MODEL_DEFAULTS
 
@@ -72,10 +78,15 @@ class LightPolicy:
         sync_order_alpha(env_config, cmc)                  # explore 1 단계 차례 α = env 값
         model = RoleModel(prep.observation_space, env.action_space, 0, mc, "eval_light")
         model.eval()
-        skipped = load_weights(model, self.weights)
+        from eval_common.model_loader import actor_prefixes
+        skipped = load_weights(model, self.weights, actor_prefixes(self.components))
         del env
-        torch.set_grad_enabled(False)
         return prep, model, skipped
+
+    def describe(self):
+        """조합 요약 + 강제된 설정 (GUI 상태줄 · 로그)."""
+        msg = self.spec.describe()
+        return msg + (f"  [forced: {'; '.join(self.warnings)}]" if getattr(self, "warnings", None) else "")
 
     def set_mode(self, mode="greedy"):
         if mode not in MODES:

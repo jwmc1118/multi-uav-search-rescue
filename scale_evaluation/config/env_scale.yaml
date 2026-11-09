@@ -4,7 +4,7 @@
 env_config:
   # ---- 맵 / 조난자 ----
   map_mode: random              # random: 매 에피소드 장애물 맵을 새로 생성 / file: map_path 의 고정 맵
-  map_path: maps/map_target/map_20260720_153619.json # 사용할 맵 — map_mode: file 일 때만
+  map_path: maps/map_target/map1.json # 사용할 맵 — map_mode: file 일 때만
   rows: 40                      # random 맵 크기 (critic state 크기 때문에 학습 중 고정)
   cols: 60
   obstacle_ratio: [0.1, 0.3]    # random 맵 장애물 비율
@@ -33,7 +33,7 @@ env_config:
   # ---- UAV ----
   position_mode: depot          # 모든 UAV 가 depot 에서 출발
   depot: null                   # depot = 모든 UAV 출발 / 재보충 지점, 월드 좌표 (x, y). null = random 맵이면 매 에피소드 랜덤
-                                #   (학습은 null — main_gui.py 는 env_main.yaml 의 고정 depot 을 쓴다)
+                                #   (학습은 null — main_gui.py 는 env_gui.yaml 의 고정 depot 을 쓴다)
   capacity: 3                   # UAV 한 대의 구호품 수. depot 에서 재보충
   agents:                       # UAV 별 센서 범위와 통신 범위
     - {sensor_range: 5, comm_range: 10}

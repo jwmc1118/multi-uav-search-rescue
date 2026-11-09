@@ -2,16 +2,12 @@
 # env_rule.yaml -> role_rule.yaml -> task_rule.yaml 순으로 합침. 값은 training/config 와 같게 유지 (tests/role/test_config.py).
 # 학습 전용 (PPO · 병렬 수집 · 네트워크 · 보상) 과 GUI 설정은 뺌 — 보상은 평가 지표 · 행동에 영향 없음
 env_config:
-  policy_mode: {task: rule}     # task head: learned = 학습 / rule = 규칙 (RESCUE: 주기 · 이벤트 "1" 담당 후보 / "2" "3" "4" EDF,
-                                #   EXPLORE: 1 단계 점수 차례 + 2 단계 거리 Hungarian — policies/role_rules.py)
-                                # ablation: (role, task) = (rule, rule) / (learned, rule) / (learned, learned)
-
   # ---- frontier 할당 (explore): 덩어리 (DBSCAN) -> 1 단계 덩어리 선택 (점수 차례) -> 같은 덩어리 m 대면 구간 분할 · 2 단계 배정 ----
   #   2 단계 (같은 덩어리 안 구간 배정) 는 거리 합 최소 1:1 Hungarian (학습 없음): 비용 = UAV 에서 구간 셀까지 BFS 최소 거리
   #     (기존 goal 우대 없음, 도달 불가 1e6)
   #   덩어리 쪼개짐 / 합쳐짐: 재결정 없이 소속만 이어 붙임 (쪼개짐 = 내 구간이 가장 많이 남은 조각, 합쳐짐 = 새 덩어리)
-  #   이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정 (기존 배정자의 explore
-  #     옵션은 계속). 아무도 새로 고르지 않은 덩어리의 기존 배정자는 그대로
+  #   이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정. 아무도 새로 고르지 않은
+  #     덩어리의 기존 배정자는 그대로
 
   # ---- 덩어리 (frontier DBSCAN, env/role/clusters.py) ----
   cluster:
@@ -32,3 +28,12 @@ env_config:
     order_dist_alpha: 2.0       # 1 단계 차례 (policies/decision_order.py explore_front, env · 그리디 · 학습 모델 공통):
                                 #   남은 UAV j x 닿는 덩어리 m 의 모든 쌍 중 점수 (N_m / (n_m + 1)) / (d_jm + 1)^α 최대 쌍이 다음 차례
                                 #   (N = 덩어리 크기, n = 배정 수, d = BFS 칸 수, 한 대마다 n 갱신). 모델 config 로 자동 복사
+
+  # ---- task 보상 (training/config/task.yaml 과 같은 값 — 평가 지표에는 영향 없음, 기록되는 보상 항목용) ----
+  rewards:
+    task:
+      w_u: 1.0                  # EXPLORE 팀 미발견 패널티 (/ T_max)
+      w_q: 1.0                  # RESCUE 팀 대기 패널티 (/ T_max)
+      w_x: 2.0                  # RESCUE 발견 후 만료 (/ N_T)
+      w_dup: 0.5                # 할당 충돌 (코드에서 / N_T, 결정당 1 회)
+      w_ts: 0.2                 # 자발적 목표 전환 penalty (/ N_T)

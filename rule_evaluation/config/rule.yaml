@@ -1,54 +1,59 @@
-# main_rule.py 설정 — 규칙 정책 (policies/role_rules.py RuleDecider, role · task 모두 rule) vs 학습 체크포인트, 같은 seed 몬테카를로 비교
-# 실행: python main_rule.py [--run both|rule|learned] --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--seeds 0-99] [--mode greedy] [--tag name]
-# 이 파일 = 실행 설정만 (seed, mode, workers, 지표, bootstrap, 그림). 평가 env 조건은 같은 폴더의 env_rule.yaml -> role_rule.yaml ->
-#   task_rule.yaml 을 합친 값 (--run rule / learned / both 모두 같은 env, training/config 와 같은 값으로 유지 — tests/role/test_config.py)
-#   체크포인트는 가중치와 관측 shape 키 (eval_common/checkpoint_policy.py SHAPE_KEYS + cluster.k_max) 에만 쓰고, 다르면 체크포인트 값으로 고정
-# 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>_<run>/  per_episode.csv, summary.csv, timeseries.csv, summary_table.tex,
-#       figures/*.pdf|png|csv, meta.json (평가 env 파일 · 실제 env_config · 고정한 키 · 체크포인트 · git commit)
+# main_rule.py 설정 — 여러 정책 (규칙 정책 · 저장 모델) 을 같은 seed 몬테카를로로 비교 (정책별 요약 + 모든 쌍 짝 비교)
+# 실행: python main_rule.py [--policies <path> ...] [--labels <이름> ...] [--pairs all|"a:b,c:d"] [--seeds 0-99] [--tag name]
+#   path = rule (규칙 정책) | 모델 경로 (best 모델 폴더 marl_models/best_model/<조합>/model_vXX 또는 학습 체크포인트) — 구성요소
+#   (role / rescue / explore: rule | learn) 는 eval_common/model_loader.py 가 meta.json / run_meta.json / 폴더 이름 / params.json 으로 정한다
+# 이 파일 = 실행 설정만 (정책 목록, seed, mode, workers, 지표, bootstrap, 그림). 평가 env 조건은 같은 폴더의 env_rule.yaml ->
+#   role_rule.yaml -> task_rule.yaml 을 합친 값 (모든 정책에 같은 env, training/config 와 같은 값으로 유지 — tests/role/test_config.py)
+#   모델은 가중치 · 구성요소 모드와 관측 shape 키 (SHAPE_KEYS + cluster.k_max) 에만 쓰고, 다르면 모델 값으로 고정 (규칙 정책도 같은 env)
+# 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  summary.txt, summary.csv, pairwise.csv, per_seed.csv, table_main.tex,
+#       table_conflict.tex, progress.csv, figures/fig_compare_{bar,paired,seed,cumulative,roles,conflict,conflict_time}.pdf|png|csv, config.yaml (실제 설정), command.txt, meta.json (정책 정보 · env · git)
 
-checkpoint: null                # 학습 체크포인트 (CLI --checkpoint 가 우선). 레포 기준 상대 경로 또는 절대 경로
-seeds: "0-99"                   # 에피소드 seed 목록 ('0-99' / '0,3,7' / '0-4,10') — 두 정책이 같은 seed 로 같은 초기 상태
-mode: greedy                    # 학습 모델 행동 선택: greedy (두 head argmax) | sample (학습 때와 같은 확률 정책)
-tag: rule_vs_model              # 결과 폴더 이름 꼬리
-workers: null                   # 병렬 워커 수 (seed 단위, CPU, torch 스레드 1). null = CPU 코어 수 - 2 (최소 1). CLI --workers
+compare:
+  policies:                     # 순서 = 표 · 그림 순서 (첫 정책 = fig_compare_seed 정렬 기준). label 은 조합 이름 권장 (색 고정)
+    - {label: rule_rule_rule,    path: rule}
+    - {label: learn_rule_rule,   path: marl_models/best_model/learn_rule_rule/model_v01}
+    - {label: learn_learn_learn, path: marl_models/best_model/learn_learn_learn/model_v01}
+  pairs: all                    # all = 모든 쌍 (목록 뒤 정책 - 앞 정책) / 또는 [[learn_rule_rule, rule_rule_rule], [learn_learn_learn, learn_rule_rule]] (A - B)
+seeds: "0-99"                   # 에피소드 seed 목록 ('0-99' / '0,3,7' / '0-4,10') — 모든 정책이 같은 seed 로 같은 초기 상태
+mode: greedy                    # 모델 행동 선택: greedy (모든 네트워크 argmax) | sample (학습 때와 같은 확률 정책)
+tag: compare                    # 결과 폴더 이름 꼬리
+workers: null                   # 병렬 워커 수 ((정책 × seed) 작업, CPU, torch 스레드 1). null = CPU 코어 수 - 2 (최소 1). CLI --workers
 
-metrics:                        # 에피소드 끝 지표 (eval_common/episode.py run_episode_detailed) — 표 / 요약 순서
-  - rescue_rate
-  - expire_rate
-  - discover_rate
-  - explored
-  - episode_len
-  - rescue_time_mean
-  - golden_slack_mean
-  - same_cell
-  - conflict_cross
-  - escalations
-  # 슬롯 잘림 (eval_common/episode.py slot_snapshot — S = 역할 결정, K = explore 1 단계 결정 기준)
-  - trunc_decisions_S           # 할당 가능 후보 수 > s_max 인 결정 수
-  - trunc_frac_S                # 그 결정 비율
-  - dropped_S                   # 잘린 할당 가능 후보 수 합 (= dropped_reachable_S: 후보 조건이 골든타임 안 도달)
-  - dropped_S_per_dec           # 결정당 잘린 후보 수
-  - dropped_urgent_S            # 잘린 후보 중 남은 후보의 최소 slack 보다 급한 후보 수 합
-  - best_dropped_S              # EDF 로 고를 생존자가 잘린 쪽에 있던 결정 수
-  - trunc_decisions_K           # 덩어리 수 > k_max 인 1 단계 결정 수
-  - trunc_frac_K
-  - dropped_K                   # 잘린 덩어리 수 합
-  - dropped_K_cells             # 잘린 덩어리 frontier 셀 수 합
-  - s_nodes_overflow            # (예전 survivor_truncated) 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (S 노드 넘침)
-lower_is_better: [expire_rate, episode_len, rescue_time_mean, same_cell, conflict_cross, escalations,
-                  trunc_decisions_S, trunc_frac_S, dropped_S, dropped_S_per_dec, dropped_urgent_S, best_dropped_S,
-                  trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells, s_nodes_overflow]
-                  # 나머지는 클수록 좋음
+metrics:                        # seed 별 지표 (eval_common/episode.py run_episode_detailed) — 표 / 요약 순서 (구조율 맨 앞)
+  - rescue_rate                 # 구조율
+  - expire_rate                 # 만료율
+  - discover_rate               # 발견율
+  - episode_len                 # 에피소드 길이
+  - discover_to_rescue_mean     # 구조된 조난자의 평균 발견 -> 구조 step
+  - undiscovered                # 끝날 때 미발견 생존자 수
+  # 구조 할당 충돌 (eval_common/episode.py ConflictTracker, 모든 정책에 같은 정의) — 에피소드당 횟수
+  - conflict_concurrent         # 동시 추격: 새 구조 목표 결정 시점에 다른 UAV 가 같은 생존자를 쫓는 중 (전역 기준, 결정당 1 회)
+  - conflict_concurrent_same_group    # 그중 쫓는 UAV 가 같은 통신 그룹 (마스크상 0 이어야 정상)
+  - conflict_concurrent_cross_group   # 그중 다른 그룹만 (서로 모름)
+  - wasted_trips                # 헛걸음: 추격 중 다른 UAV 가 그 생존자를 먼저 구조해 끝난 추격 수
+  - wasted_steps                # 낭비 step: 그 추격들 동안 실제로 움직인 step 수 합
+  - conflict_reward             # 보상 기준 충돌 (참고): 학습 보상 task_conflict 와 같은 판정 (_check_dup, 그룹 + 메모리 노드)
+  - rescue_decisions            # 새 구조 목표 결정 수 (같은 생존자 유지 제외) — 아래 비율의 분모, 참고 지표 (짝 비교 안 함)
+  # 구조 결정 1 회당 비율 (횟수 / rescue_decisions)
+  - conflict_concurrent_per_dec
+  - conflict_concurrent_same_group_per_dec
+  - conflict_concurrent_cross_group_per_dec
+  - wasted_trips_per_dec
+  - wasted_steps_per_dec
+  - conflict_reward_per_dec
+lower_is_better: [expire_rate, episode_len, discover_to_rescue_mean, undiscovered,
+                  conflict_concurrent, conflict_concurrent_same_group, conflict_concurrent_cross_group, wasted_trips,
+                  wasted_steps, conflict_reward, conflict_concurrent_per_dec, conflict_concurrent_same_group_per_dec,
+                  conflict_concurrent_cross_group_per_dec, wasted_trips_per_dec, wasted_steps_per_dec, conflict_reward_per_dec]
+                  # 작을수록 좋음 (W/T/L 의 W = 더 적음). 나머지는 클수록 좋음
+reference_metrics: [rescue_decisions]   # 요약만 (좋고 나쁨 방향이 없어 짝 비교 · W/T/L 에서 뺌)
 
 bootstrap:
-  n: 10000                      # 요약 · 짝 차이 95% CI bootstrap 횟수
+  n: 10000                      # 평균 · 짝 차이 95% CI bootstrap 횟수
   seed: 0                       # bootstrap 난수 seed (재현)
   alpha: 0.05                   # 1 - 신뢰수준
-  n_timeseries: 1000            # 시계열 step 별 CI bootstrap 횟수 (step 수만큼 반복하므로 작게)
-  n_convergence: 1000           # 몬테카를로 수렴 그림의 에피소드 수별 CI bootstrap 횟수
 
 figures:
   enabled: true                 # 그림 저장 (--no-figs 로 끔)
-  width: double                 # 여러 패널 그림 폭: single (3.5 in) | double (7.16 in). 한 패널 그림은 항상 single
+  width: double                 # 여러 패널 그림 폭: single (3.5 in) | double (7.16 in). fig_compare_paired 는 항상 single
   dpi: 300                      # PNG 해상도 (PDF 는 벡터)
-  timeseries_max_step: null     # 시계열 그림 x 축 상한 (null = 가장 긴 에피소드)

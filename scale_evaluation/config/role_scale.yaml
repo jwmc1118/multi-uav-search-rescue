@@ -2,10 +2,6 @@
 # env_scale.yaml -> role_scale.yaml -> task_scale.yaml 순으로 합침. 값은 training/config 와 같게 유지 (tests/role/test_config.py).
 # 학습 전용 (PPO · 병렬 수집 · 네트워크 · 보상) 과 GUI 설정은 뺌 — 보상은 평가 지표 · 행동에 영향 없음
 env_config:
-  # ---- head 별 정책: learned = 학습 / rule = 규칙 정책 (policies/role_rules.py, 그 head 는 loss · critic 에서 제외) ----
-  # ablation (role, task): (rule, rule) = 전부 규칙 (기준선) / (learned, rule) = role 만 학습 / (learned, learned) = 전부 학습
-  policy_mode: {role: learned}    # role head: learned = 학습 / rule = 규칙 (policies/role_rules.py rule_role)
-
   # ---- 역할 결정 ----
   role:
     max_redecide: 1             # 하위 할당 실패(고를 노드 없음) 시 RETURN 으로 대체하는 횟수 상한 (점검용 —
@@ -31,7 +27,7 @@ env_config:
   #    이후 그 그룹은 역할 마스크에서 EXPLORE 금지 — 그리디는 할당 가능 생존자 -> RESCUE, 없으면 RETURN)
   #   목표 유효 (관측 goal_valid): "2" / "3" / "4" 면 꺼짐, periodic · "1" 은 유지 (기존 목표가 관측에 그대로)
   #   RESCUE 재결정: 자기 현재 목표도 후보 (재결정하지 않는 UAV 가 맡은 생존자만 막음). EXPLORE 재결정: 지금 덩어리도 후보
-  #   같은 생존자 / 덩어리를 다시 고르면 rescue / explore 옵션을 이어감 (새 학습 표본 아님)
+  #   같은 생존자 / 덩어리를 다시 고르면 새 학습 표본이 아님
   # 결정 순서 (policies/decision_order.py, 그리디 / 학습 공통, 한 대가 결정할 때마다 남은 대상으로 다시 계산):
   #   role 차례 = 여유 시간 σ 가 작은 생존자부터 가장 가까운 UAV (닿는 UAV 가 없으면 가까운 생존자 거리 -> 용량 -> 번호),
   #   RESCUE 를 고르면 바로 생존자 할당 (다음 role 차례는 그 선택을 반영해 다시 계산),
@@ -47,3 +43,12 @@ env_config:
     log_events: true            # 이벤트 / 역할 전환 / 목표 변경 기록 (info event_stats, custom_metrics)
     log_dir: null               # 에피소드 로그 JSON 폴더 (null = 저장 안 함. run_rules 는 results/rules/event_logs/<tag>)
     period: 10                  # 주기 재결정 간격 (step, >= 1): t % period == 0 (t = 0 포함) 이면 alive UAV 전원
+
+  # ---- role 보상 (training/config/role.yaml 과 같은 값 — 평가 지표에는 영향 없음, 기록되는 보상 항목용) ----
+  rewards:
+    role:
+      w_x: 2.0                  # 만료 1 명당 (팀 공유, / N_T)
+      terminal_unrescued_as_expired: true   # 에피소드가 끝날 때 아직 구조되지 않은 생존자 = 마지막 step 의 만료 X
+      w_d: 0.5                  # 늦지 않은 발견 1 명당 (팀 공유, / N_T)
+      discover_margin: 5        # T_m (step): 발견 시점에 남은 골든타임 τ_k - t 가 이보다 클 때만 발견 보상
+      w_sw: 0.2                 # 자발적 역할 전환 penalty (/ N_T, 전환한 UAV 만)

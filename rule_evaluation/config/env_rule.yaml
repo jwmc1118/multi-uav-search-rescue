@@ -4,7 +4,7 @@
 env_config:
   # ---- 맵 / 조난자 ----
   map_mode: random              # random: 매 에피소드 장애물 맵을 새로 생성 / file: map_path 의 고정 맵
-  map_path: maps/map_target/map_20260720_153619.json # 사용할 맵 — map_mode: file 일 때만
+  map_path: maps/map_target/map1.json # 사용할 맵 — map_mode: file 일 때만
   rows: 40                      # random 맵 크기 (critic state 크기 때문에 학습 중 고정)
   cols: 60
   obstacle_ratio: [0.1, 0.3]    # random 맵 장애물 비율

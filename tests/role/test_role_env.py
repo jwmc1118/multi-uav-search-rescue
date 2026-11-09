@@ -8,8 +8,7 @@
    + 같은 step 결정 순서: 앞 순서가 고른 생존자는 뒤 UAV 의 rescue 마스크에서 빠지고, 남은 생존자가 없으면 RESCUE 역할도 마스크
 4) 보상: 전부 구조 시 role 보상 합 = 1.0, 실제 에피소드에서 Σ r_role = (구조 - w_x · (만료 + 끝날 때 미구조)) / N_T + 늦지 않은 발견 보상
    + 자기 전환 penalty
-5) 규칙 정책 에피소드: rescue 보상은 RESCUE UAV 에만 (이벤트 끝 S - F + 보너스 + 중복), explore 보상은 그 step EXPLORE 인 UAV 에만
-   (매 step (direct + w_share share) / |C_free| >= 0) — Σ r_explore = rw explore_direct + explore_share
+5) 규칙 정책 에피소드: Σ r_task = 항목별 기록 (rw task_*) 합 (전부 패널티라 <= 0)
 """
 
 import numpy as np
@@ -69,7 +68,7 @@ def check_conflict():
         assert inv == [True, False], inv
     ev = sim._collect_events([b.pos for b in sim.agents], set(), {})
     assert "4" in ev[0] and "4" not in ev[1]
-    print(f"[3] conflict awareness: tie -> higher index loses, closer one keeps; farther gets event 4")
+    print("[3] conflict awareness: tie -> higher index loses, closer one keeps; farther gets event 4")
 
 
 def check_rescue_mask_conflict():
@@ -102,34 +101,25 @@ def check_rewards():
     want = 1.0 + sim.last_discover                                     # 전원 구조 (연결성 항 없음) + 발견 보상
     assert all(abs(x - want) < 1e-9 for x in r["role"]), (r["role"], want)
     sim = make_sim(4)
-    sums = np.zeros(3)
+    sums = np.zeros(2)
     n_res = n_exp = 0
     done = False
-    rescue_outside = explore_outside = n_exp_dec = 0
     while not done:
         done, info = sim.step(RuleDecider())
-        sums += [info["reward_role"][0], sum(info["reward_rescue"]), sum(info["reward_explore"])]
+        sums += [info["reward_role"][0], sum(info["reward_rescue"]) + sum(info["reward_explore"])]
         n_res += info["rescued_now"]
         n_exp += info["expired_now"]
-        rescue_outside += sum(1 for k in range(sim.n_agents) if info["reward_rescue"][k] != 0 and not info["in_rescue_seg"][k])
-        for k in range(sim.n_agents):
-            re_ = info["reward_explore"][k]
-            n_exp_dec += int(info["explore_valid"][k] > 0)
-            assert 0.0 <= re_ <= 1.0, re_
-            if re_ != 0 and not info["explore_active"][k]:
-                explore_outside += 1
     n_t = len(sim.targets)
     left = sum(1 for t in sim.targets if t.active)                     # 끝날 때 미구조 = 마지막 step 의 만료
     disc0 = float(sim.rw["role_discover"][0])                          # 늦지 않은 발견 보상 (팀 공유)
     sw0 = float(sim.rw["role_switch"][0])                              # R0 자발적 전환 penalty
     assert abs(sums[0] - ((n_res - w["role"]["w_x"] * (n_exp + left)) / n_t + disc0 + sw0)) < 1e-9
-    ratio = float(sim.rw["explore_direct"].sum() + sim.rw["explore_share"].sum())
-    assert abs(sums[2] - ratio) < 1e-6 and rescue_outside == 0 and explore_outside == 0 and n_exp_dec > 0, \
-        (sums[2], ratio, rescue_outside, explore_outside, n_exp_dec)
+    from env.role.simulation import TASK_ITEMS
+    items = float(sum(sim.rw[k].sum() for k in TASK_ITEMS))
+    assert abs(sums[1] - items) < 1e-6 and sums[1] <= 0.0, (sums[1], items)                 # task 항은 전부 패널티
     print(f"[4] role reward: all rescued -> {want:.3f}; episode Σ r_role(R0) {sums[0]:.3f} = ({n_res} - "
           f"{w['role']['w_x']}·({n_exp} + {left} left at end))/{n_t} + timely discovery {disc0:+.3f} + switch {sw0:+.3f}")
-    print(f"[5] rescue reward only on RESCUE UAVs (Σ {sums[1]:.3f}: S - F + bonus + duplicate); explore reward only on EXPLORE "
-          f"UAVs, each in [0, 1] ({n_exp_dec} explore decisions; Σ {sums[2]:.4f} = rw explore_direct + explore_share {ratio:.4f})")
+    print(f"[5] task reward: episode Σ r_task {sums[1]:.4f} = Σ rw task items {items:.4f} (all penalties, <= 0)")
 
 
 if __name__ == "__main__":

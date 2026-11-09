@@ -2,11 +2,11 @@
 
     python -m tests.eval.test_parallel_equiv --checkpoint <checkpoint_XXXXXX 폴더 또는 파일> [--workers 4]
 
-[1] main_rule 경로 (rule_evaluation.compare.run_parallel), seed 0-9: workers = 1 과 workers = W 의 per_episode / timeseries 행이
-    완전히 같다 (추론 시간 infer_ms_per_decision 제외), 행 순서 = 정책 · seed 순
+[1] main_rule 경로 (rule_evaluation.compare.run_parallel, 규칙 정책 + 모델, (정책 × seed) 작업), seed 0-9: workers = 1 과
+    workers = W 의 per_episode / timeseries 행이 완전히 같다 (추론 시간 infer_ms_per_decision 제외), 행 순서 = 정책 · seed 순
 [2] main_scale 경로 (scale_evaluation.compare.run_all), N = 2, 5 · seed 0-3: 같은 비교 (한 워커가 여러 N 처리)
 [3] 경량 정책 (LightPolicy) = ray CheckpointPolicy: seed 0-1 greedy 에서 지표 · 시계열 · 초기 상태 지문이 같다 (--skip-ray 로 생략)
---checkpoint 를 안 주면 marl_models/RolePPO/checkpoints/best/checkpoint_* 를 쓴다.
+--checkpoint 를 안 주면 marl_models/best_model/learn_rule_rule 의 최신 model_vXX 를 쓴다.
 """
 import argparse
 import glob
@@ -43,19 +43,20 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--skip-ray", action="store_true")
     args = ap.parse_args()
-    ckpt = args.checkpoint or sorted(glob.glob("marl_models/RolePPO/checkpoints/best/checkpoint_*"))[-1]
+    ckpt = args.checkpoint or sorted(glob.glob("marl_models/best_model/learn_rule_rule/model_v*"))[-1]
     ckpt = os.path.abspath(ckpt)
     from rule_evaluation import compare as rc
     from scale_evaluation import compare as sc
     from scale_evaluation.scaling import scaled_env_config
-    cfg = {"checkpoint": ckpt, "mode": "greedy", "env": {}}
+    cfg = {"checkpoint": ckpt, "mode": "greedy"}
 
     seeds = list(range(10))
-    a = rc.run_parallel(cfg, seeds, 1, label="w=1")
-    b = rc.run_parallel(cfg, seeds, args.workers, label=f"w={args.workers}")
-    assert _same(_strip(a[0]), _strip(b[0])), "per_episode 가 workers 수에 따라 다름"
+    pols = rc.resolve_policies([{"label": "rule", "path": "rule"}, {"label": "model", "path": ckpt}])
+    a = rc.run_parallel(pols, seeds, 1, label="w=1")
+    b = rc.run_parallel(pols, seeds, args.workers, label=f"w={args.workers}")
+    assert _same(_strip(a[0]), _strip(b[0])) and a[2] == b[2], "per_episode 가 workers 수에 따라 다름"
     assert _same(a[1], b[1]), "timeseries 가 workers 수에 따라 다름"
-    assert [(r["policy"], r["seed"]) for r in a[0]] == [(p, s) for p in rc.POLICIES for s in seeds]
+    assert [(r["policy"], r["seed"]) for r in a[0]] == [(p, s) for p in ("rule", "model") for s in seeds]
     print(f"[1] main_rule path: workers 1 == {args.workers} ({len(a[0])} episodes, {len(a[1])} timeseries rows)")
 
     base, n_ref, _ = sc.base_env(cfg)
@@ -68,12 +69,14 @@ def main():
 
     if not args.skip_ray:
         from env.role.simulation import RoleSimulation
-        from eval_common.checkpoint_policy import CheckpointPolicy, resolve_checkpoint
+        from eval_common.checkpoint_policy import CheckpointPolicy
+        from eval_common.model_loader import find_checkpoint
         from eval_common.episode import run_episode_detailed
         from eval_common.light_policy import LightPolicy
-        heavy = CheckpointPolicy(resolve_checkpoint(ckpt), env_config=base, mode="greedy")
-        light = LightPolicy(resolve_checkpoint(ckpt), mode="greedy")
-        assert light.prepare(base) == heavy.env_config
+        heavy = CheckpointPolicy(find_checkpoint(ckpt), env_config=base, mode="greedy")
+        light = LightPolicy(ckpt, mode="greedy")
+        assert {k: v for k, v in light.prepare(base).items() if k != "components"} == \
+            {k: v for k, v in heavy.env_config.items() if k != "components"}
         sim = RoleSimulation(heavy.env_config)
         for s in (0, 1):
             x, tx, gx = run_episode_detailed(sim, heavy, s)

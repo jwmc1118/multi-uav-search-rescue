@@ -1,4 +1,4 @@
-"""계층 구조 env (env/role/simulation.py) 의 그리디 정책 — baseline / 디버깅 / policy_mode 의 rule 헤드 / 마스크 위반 대체.
+"""계층 구조 env (env/role/simulation.py) 의 그리디 정책 — baseline / 디버깅 / rule 구성요소 (env_config components) / 마스크 위반 대체.
 
 결정 순서는 env 가 policies/decision_order.py 로 정하고, 차례가 된 UAV 의 담당 후보를 sim.cur_claim (생존자) /
 sim.cur_xclaim (덩어리 슬롯) 에 넣어 둔다. 그리디는 담당 후보를 그대로 고르므로 순서가 '한 번 계산한 전체 순서' 와 같다.

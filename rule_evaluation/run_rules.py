@@ -89,13 +89,7 @@ def run_episode(sim, decider, seed):
     rs = es["rewards"]
     return {
         **{f"rw_{k}": v for k, v in rs["sum"].items()},
-        "rescue_events": rs["rescue_events"], "rescue_S": rs["rescue_S"], "rescue_F": rs["rescue_F"],
-        "rescue_U_eps_size": rs["rescue_U_eps_size"], "rescue_F_min": rs["rescue_F_min"],
-        "rescue_bonus_rate": rs["rescue_bonus_rate"], "rescue_SF_term": rs["rescue_SF_term"],
-        "rescue_bonus_term": rs["rescue_bonus_term"], "role_rescue_term": rs["role_rescue_term"],
-        "explore_term": rs["explore_term"], "explore_own_return": rs["explore_return"],
-        "explore_direct_cells": rs["explore_direct_cells"], "explore_share_cells": rs["explore_share_cells"],
-        "explore_option_len": rs["explore_option_len"],
+        "role_rescue_term": rs["role_rescue_term"], "task_switch": rs["task_switch"], "found_expire": rs["found_expire"],
         "explore_masked_decisions": es["explore_masked_decisions"], "forced_return_all_masked": es["forced_return_all_masked"],
         "ev4_exploration_complete": es["ev4_causes"]["exploration_complete"],
         **{f"redecide_{e}": v for e, v in es["redecide_causes"].items()}, "redecide_overlap": es["redecide_overlap"],
@@ -107,7 +101,7 @@ def run_episode(sim, decider, seed):
         "link_made": es["link_made"], "link_broken": es["link_broken"], "group_size_ep": es["group_size"],
         **{f"nbr_bin{b}": v for b, v in enumerate(es["nbr_dist_hist"])},
         "dup_in": rs["dup_in"], "dup_out": rs["dup_out"],
-        "conn_real_mean": rs["conn_real_mean"], "rescue_omega_bar": rs["rescue_omega_bar"],
+        "conn_real_mean": rs["conn_real_mean"],
         "n_groups": es["n_groups"], "survivor_truncated": es["survivor_truncated"], "ev1_rescue_nearest": es["ev1_rescue_nearest"],
         "seed": seed, "n_targets": len(sim.targets), "episode_len": sim.time,
         "rescue_rate": info["rescued_total"] / n_t, "expire_rate": info["expired_total"] / n_t,
@@ -151,7 +145,7 @@ def main():
     ap.add_argument("--no-log", action="store_true", help="에피소드 이벤트 로그 JSON 저장 안 함")
     args = ap.parse_args()
 
-    from env.role.simulation import EVENTS, EXPLORE_EVENTS, RoleSimulation
+    from env.role.simulation import EVENTS, EXPLORE_EVENTS, TASK_ITEMS, RoleSimulation
     from policies.role_rules import RandomDecider, RuleDecider
     from training.config_loader import load_config
     cfg = load_config(args.config and [os.path.join(ROOT, p) for p in args.config])["env_config"]
@@ -172,11 +166,9 @@ def main():
             "seg_cv_mean", "seg_cv_ok", "idle_no_goal",
             "redecide_uavs", "goal_change",
             "partial_return", "partial_deficit", "rescued_after_partial",
-            "rw_role_team", "rw_role_discover", "rw_role_switch", "rw_rescue_sf", "rw_rescue_bonus", "rw_rescue_dup",
-            "rw_explore_direct", "rw_explore_share",
-            "role_rescue_term", "rescue_SF_term", "rescue_bonus_term", "explore_term",
-            "rescue_S", "rescue_F", "rescue_U_eps_size", "rescue_F_min", "rescue_bonus_rate",
-            "explore_own_return", "explore_direct_cells", "explore_share_cells", "explore_option_len", "explore_masked_decisions", "forced_return_all_masked",
+            "rw_role_team", "rw_role_discover", "rw_role_switch"] + [f"rw_{k}" for k in TASK_ITEMS] + [
+            "role_rescue_term", "task_switch", "found_expire",
+            "explore_masked_decisions", "forced_return_all_masked",
             "ev4_exploration_complete",
             "redecide_periodic", "redecide_1", "redecide_2", "redecide_3", "redecide_4", "redecide_overlap",
             "ev1_explore", "ev1_merge", "rescue_keep_rate", "explore_keep_rate", "cap0_explore_choice",
@@ -186,9 +178,8 @@ def main():
             "res_redecide_periodic", "res_redecide_1", "res_redecide_2", "res_redecide_3", "res_redecide_4",
             "preempt_candidates", "dec_interval", "latch_hold", "link_made", "link_broken", "group_size_ep",
             "nbr_bin0", "nbr_bin1", "nbr_bin2", "nbr_bin3", "nbr_bin4",
-            "rescue_events",
             "switch_forced", "switch_voluntary_periodic", "switch_voluntary_ev1", "dup_in", "dup_out",
-            "conn_real_mean", "rescue_omega_bar", "n_groups", "ev1_rescue_nearest", "survivor_truncated"] + \
+            "conn_real_mean", "n_groups", "ev1_rescue_nearest", "survivor_truncated"] + \
         [f"role_{c}_{r}" for c in ("zero", "partial", "full") for r in ("explore", "rescue", "return")]
     print(f"\n=== {args.policy} policy, {len(eps)} episodes, N={sim.n_agents} ===")
     summary = []

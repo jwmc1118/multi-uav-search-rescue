@@ -1,22 +1,20 @@
-"""두 네트워크 (역할 선택 / task (하위 할당)) 의 이종 그래프 GNN + 연결성 보상 점검 (CPU 로 충분).
+"""세 네트워크 (역할 선택 / rescue / explore) 의 이종 그래프 GNN + 연결성 보상 점검 (CPU 로 충분).
 
     python -m tests.role.test_gnn
 
 [1] 그래프 구성 (모델이 직접 env 를 굴리며 순차 디코딩 trace 를 매 step 검사):
     노드 · 간선 차원 (U 12, S 3, F 3 / UU 4, US 3, UF 2, SS 3, FF 3, SF 3), U 노드 = 그룹 (linked 1) + 메모리 노드 (linked 0,
-    역할 무관, 두 네트워크 같음), S 노드 = 그룹이 아는 생존자만, 값: 연결 노드 절대 위치 / 메모리 노드 기록 위치, depot BFS, ω^g,
+    역할 무관, 세 네트워크 같음), S 노드 = 그룹이 아는 생존자만, 값: 연결 노드 절대 위치 / 메모리 노드 기록 위치, depot BFS, ω^g,
     그룹 context [ρ, η, ν, t / T_max], U–S BFS 와 ETA 기반 σ (메모리 노드 = 기록 위치 · 용량), 목표 중복 간선 (차례 처음 = 관측의 목표 /
     슬롯 기준, 메모리 노드는 기록된 목표), 앞 차례 RESCUE 결정이 뒤 그래프에 반영
 [1b] σ: 용량 0 이면 depot 경유 ETA = BFS(l, depot) + BFS(depot, s), 용량 > 0 이면 ETA = BFS(l, s)
 [2] attention 집계 순열 불변, 패딩 노드 무영향 (출력 0), U–S 간선 갱신도 순열 불변
 [3] 2-hop: A–B–C 사슬에서 L = 1 이면 C 가 A 에 안 닿고 L = 2 면 닿음
 [4] 그룹 연결도 ω^g_i = (|U_i| - 1) / (|U| - 1) (U_i = 통신 그룹): 그룹 {3, 2} -> 3 쪽 0.5, 2 쪽 0.25
-[5] 보상: rescue 구조 완료 옵션에서 F_excess > 0 이면 개인 보너스 0 (ω̄^g 무관), F_excess = 0 이면 ω̄^g 0 -> 1 에 w_b w_c / N_T 만큼,
-     에피소드 끝으로 닫힌 옵션은 0, explore 새 셀이 없으면 연결도와 무관하게 0
 [6] 삭제된 / 모르는 모델 옵션은 에러 없이 무시
 [7] kNN 동률 (S–S / F–F / S–F): k 번째 이웃과 거리가 같은 이웃은 모두 포함, 노드 순서를 섞어도 인접 · GNN 출력이 같음
 [8] 크기 특징 size_feat(n) = min(1, log(1 + n) / log(1 + 100))
-[9] 두 네트워크는 파라미터를 공유하지 않고, 각 head loss 는 자기 네트워크에만 gradient 를 준다
+[9] 세 네트워크는 파라미터를 공유하지 않고, 각 네트워크 loss 는 자기 네트워크에만 gradient 를 준다
 """
 import copy
 
@@ -43,7 +41,7 @@ def make(n_agents=None, seed=0):
     ec = copy.deepcopy(cfg["env_config"])
     if n_agents:
         ec["agents"] = [dict(ec["agents"][0]) for _ in range(n_agents)]
-    ec["policy_mode"] = {"role": "learned", "task": "learned"}
+    ec["components"] = {"role": "learn", "rescue": "learn", "explore": "learn"}
     env = RoleEnv(ec)
     prep = ModelCatalog.get_preprocessor_for_space(env.observation_space)
     torch.manual_seed(seed)
@@ -279,13 +277,14 @@ def check_independent_nets():
             out = m.last_out
             ob = env.sim._obs_cache
             needed = torch.as_tensor(np.array([a["role_needed"][0] for a in ob["agents"]]) > 0.5)[None]
-            masks = {"role": needed, "task": out["stage"]["rescue"] | out["stage"]["s1"]}
+            masks = {"role": needed, "rescue": out["stage"]["rescue"], "explore": out["stage"]["s1"]}
             for h, mk in masks.items():
-                lg = out["logits"][h]
+                key = "role" if h == "role" else "task"                       # rescue / explore 는 task 행동 칸을 나눠 씀
+                lg = out["logits"][key]
                 mk = mk & ((lg > -1e8).sum(-1) >= 2)
                 if h in got or not bool(mk.any()):
                     continue
-                lp = torch.log_softmax(lg, -1).gather(-1, out["actions"][h].clamp(0, lg.shape[-1] - 1)[..., None])[..., 0]
+                lp = torch.log_softmax(lg, -1).gather(-1, out["actions"][key].clamp(0, lg.shape[-1] - 1)[..., None])[..., 0]
                 loss = -(lp * mk.float()).sum()
                 norms = {}
                 for h2, ps in params.items():
@@ -294,14 +293,14 @@ def check_independent_nets():
                 got[h] = norms
             act = {k: [int(x) for x in out["actions"][k][0]] for k in ("role", "task")}
             obs, _, done, _ = env.step(act)
-            if len(got) == 2 or done:
+            if len(got) == 3 or done:
                 break
-        if len(got) == 2:
+        if len(got) == 3:
             break
-    assert len(got) == 2, got
+    assert len(got) == 3, got
     for h, norms in got.items():
         assert norms[h] > 0 and all(v == 0.0 for h2, v in norms.items() if h2 != h), (h, norms)
-    print("[9] two networks (role / task) share no parameters; head loss gradients reach only their own network: "
+    print("[9] three networks (role / rescue / explore) share no parameters; each loss reaches only its own network: "
           + ", ".join(f"{h} -> own {n[h]:.2e}, others {max(v for k, v in n.items() if k != h):.0e}" for h, n in got.items()))
 
 
@@ -318,39 +317,6 @@ def check_connectivity():
     print(f"[4] group connectivity: groups {{3, 2}} -> {c}")
 
 
-def check_rewards():
-    """rescue 개인 보너스 (구조 완료로 끝난 옵션만): F > 0 이면 ω̄^g 와 무관하게 0, F = 0 이면 ω̄^g 0 -> 1 에 w_b w_c / N_T 만큼,
-    에피소드 끝으로 닫히면 0. explore: 새 셀이 없으면 ω^g 와 무관하게 0."""
-    from types import SimpleNamespace
-    env, _, _ = make()
-    sim = env.sim
-    env.seed(2)
-    env.reset()
-    rc = sim.rewards_cfg["rescue"]
-    w_c, w_b, n_t = float(rc["w_c"]), float(rc["w_b"]), len(sim.targets)
-    n = sim.n_agents
-
-    def bonus(F, c, rescued=True):
-        sim._bonus_pending = [0.0] * n
-        sim._res_opt = [{"F": F, "d": 0.2, "wsum": 0.0, "n": 0}] + [None] * (n - 1)
-        by = [SimpleNamespace(agent=0)] if rescued else []                # 옵션 1 step, 구조 완료 (또는 에피소드 끝) 로 닫힘
-        sim._rescue_options([c] + [0.0] * (n - 1), by, True)
-        return sim._bonus_pending[0]
-    f_lo, f_hi = bonus(1, 0.0), bonus(1, 1.0)
-    z_lo, z_hi = bonus(0, 0.0), bonus(0, 1.0)
-    assert f_lo == f_hi == 0.0 and abs((z_hi - z_lo) - w_b * w_c / n_t) < 1e-12, (f_lo, f_hi, z_lo, z_hi)
-    assert bonus(0, 1.0, rescued=False) == 0.0                                   # 구조 완료가 아니면 0
-    sim._prev_free = [f.copy() for f in sim.knowledge.known_free]            # 새로 아는 셀 없음
-    sim.knowledge.last_visible = [set() for _ in range(n)]
-    for c in ([0.0] * n, [1.0] * n):
-        sim.group_connectivity = lambda c=c: c
-        e = sim.role_rewards([], [], explore_active=[True] * n)["explore"]
-        assert e == [0.0] * n, e
-    del sim.group_connectivity
-    print(f"[5] rescue (rescue-completed option) F > 0: bonus {f_lo} (ω̄ 0) / {f_hi} (ω̄ 1); F = 0: Δbonus(ω̄ 0 -> 1) = "
-          f"{z_hi - z_lo:.4f} (= w_b w_c / N_T); closed at episode end -> 0; explore with no new cells -> reward 0 for any ω^g")
-
-
 def check_size_feat():
     from env.role.graph_obs import size_feat
     want = {2: 0.238, 5: 0.388, 26: 0.714, 74: 0.935, 100: 1.0, 150: 1.0, 1000: 1.0, 0: 0.0}
@@ -365,9 +331,9 @@ def check_removed_options():
     """삭제된 / 모르는 모델 옵션 (예전 config 에 남은 키) 은 에러 없이 무시."""
     from models.role.net import resolve_model_options as rmo
     out = rmo({"rescue": {"n_heads": 8}, "explore": {"clip": 5.0}, "gnn": {"aggr": "mean_max"}, "share_context": False,
-               "task": {"embed_dim": 128}})
-    assert "rescue" not in out and "aggr" not in out["gnn"] and "embed_dim" not in out["task"]
-    print("[6] removed / unknown model options (old rescue / explore network keys, gnn.aggr, ...) -> ignored")
+               "task": {"embed_dim": 128, "entropy_coeff_rescue": 0.5}})
+    assert "n_heads" not in out["rescue"] and "clip" not in out["explore"] and "aggr" not in out["gnn"] and "task" not in out
+    print("[6] removed / unknown model options (old unified task keys, rescue.n_heads, explore.clip, gnn.aggr, ...) -> ignored")
 
 
 def check_knn_ties():
@@ -410,7 +376,6 @@ if __name__ == "__main__":
     check_removed_options()
     check_connectivity()
     check_sigma_depot()
-    check_rewards()
     check_independent_nets()
     check_graph()
     print("test_gnn: all ok")

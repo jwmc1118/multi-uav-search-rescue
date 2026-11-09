@@ -1,0 +1,103 @@
+# main_gui.py 전용 설정 (학습은 task.yaml 을 사용)
+# Task 정책 설정 — 역할을 고른 뒤의 하위 할당: rescue 네트워크 (생존자 선택) / explore 네트워크 (frontier 덩어리 선택,
+# 1 단계) — 학습 / 규칙, 네트워크 · critic · loss (models/role/net.py PointerNetwork, training/role/ppo.py), task 보상,
+# frontier 할당 (덩어리 · 1 단계 점수 · 2 단계; env/role/explore.py, env/role/clusters.py, env/role/simulation.py)
+# 학습: python -m training.train   (env.yaml + role.yaml + task.yaml)
+
+# ==== 1) rescue / explore 네트워크 · 학습 설정 (rule / model / learn 은 env.yaml components — 네트워크마다 독립) ====
+# ---- 네트워크 (models/role/net.py): rescue · explore 두 네트워크 (encoder · GNN · decoder · critic 모두 따로, 공유 파라미터 없음,
+#   env.yaml model.gnn 설정). 입력 그래프는 같음: 노드 U (그룹 전체 — 역할 무관, 연결 + 메모리 노드) · S · F,
+#   관계 S↔U, F↔U, U↔U, S↔S, F↔F, S↔F (U–S / U–F 간선 층마다 갱신)
+#   pointer decoder: q_i = W_Q [h_i^L ‖ ξ_ctx(c_i)] (c_i = 그룹 context [ρ, η, ν, t / T_max], 역할 one-hot 없음),
+#     k_j = W_K [h_j^L ‖ e_ij^L], u_ij = C tanh(q_iᵀ k_j / √D), π = softmax(u + M)
+#     rescue  : 후보 S (U–S 간선), M = 할당 가능 생존자 (같은 그룹 앞 차례가 고른 생존자 제외)
+#     explore : 후보 F (U–F 간선), M = explore_mask 덩어리 (같은 덩어리 중복 선택 허용)
+#   호출: role 에서 RESCUE 를 고르면 바로 rescue, EXPLORE 는 role 결정이 끝난 뒤 explore_front 차례로 explore (policies/decision_order.py)
+#   2 단계 (같은 덩어리 안 구간 배정) 는 env 의 거리 합 최소 Hungarian (학습 없음)
+#   critic (CTDE rich critic, actor 와 인코더 비공유, 네트워크마다 따로): V^res / V^exp, 입력 extra = [role_self, role_group] ‖
+#     전역 critic_task_global (3: 미발견 비율, 대기 비율, t / T_max — 학습 전용). 상태 가치 (고른 행동 특징 없음)
+#   학습 구간: 같은 네트워크의 다음 결정과 그 역할을 벗어나는 step 중 먼저 오는 쪽까지 (training/role/ppo.py)
+model:
+  custom_model_config:
+    loss:
+      lambda_rescue: 1.0        # L = λ_role L^role + λ_rescue L^rescue + λ_explore L^explore
+      lambda_explore: 1.0
+    rescue:
+      lr: 3.0e-5                # 학습률 (optimizer param group). env.yaml lr_schedule 은 배율로: lr · lr_schedule(t) / lr(env.yaml)
+      clip_param: 0.1           # PPO clip 범위 (role 은 env.yaml clip_param)
+      entropy_coeff: 0.01       # 엔트로피 보너스 계수 c_e^res
+      pointer_clip: 10.0        # pointer 점수 tanh clip 상수 C
+      value_norm: true          # V^res ValueNorm
+      critic:                     # V^res critic
+        cnn_filters: [[16, 3, 2], [32, 3, 2], [64, 3, 1]]   # critic CNN 층 [채널, 커널, stride]
+        state_features: 128       # critic 중앙 state CNN 출력 차원
+        local_features: 64        # critic local CNN 출력 차원
+        hidden: [128, 64]         # critic MLP 은닉층
+        set_dim: 64               # critic 조난자 / 팀 집합 임베딩 차원
+        set_heads: 4              # critic 조난자 attention 헤드 수
+    explore:
+      lr: 3.0e-5                # 학습률 (optimizer param group). env.yaml lr_schedule 은 배율로
+      clip_param: 0.1           # PPO clip 범위
+      entropy_coeff: 0.01       # 엔트로피 보너스 계수 c_e^exp
+      pointer_clip: 10.0        # pointer 점수 tanh clip 상수 C
+      value_norm: true          # V^exp ValueNorm
+      critic:                     # V^exp critic
+        cnn_filters: [[16, 3, 2], [32, 3, 2], [64, 3, 1]]
+        state_features: 128
+        local_features: 64
+        hidden: [128, 64]
+        set_dim: 64
+        set_heads: 4
+
+
+env_config:
+  # ==== 2) task 보상 (env/role/simulation.py task_rewards — 매 step, UAV 별) ====
+  #   r_task_{i,t} = r_role_specific_{i,t} - (w_ts / N_T) · 1[자발적 목표 전환_{i,t}]
+  #     모든 집합은 전역 (실제 환경, belief 아님), step 의 센싱 · 구조 · 만료 처리 후: S = 전체 생존자 (N_T), F_t = 팀 전체 발견,
+  #     R_t = 구조, E_t = 만료, ΔE_t = 이번 step 만료
+  #     자발적 목표 전환 = 재결정에서 같은 역할 (RESCUE -> RESCUE / EXPLORE -> EXPLORE) 을 골랐고 이전 목표가 유효한데
+  #     (구조 · 만료 · 도달 불가 · 덩어리 소멸 · 이벤트 "4" 아님, 원인에 "2" / "3" 없음) 다른 목표를 고름 — 그 결정 step 1 회.
+  #     쪼개져 나온 덩어리는 같은 목표
+  #   EXPLORE 인 step: -(w_u / T_max) · |S \ F_t| / (N_T - |E_t \ F_t|)   (분모 0 이면 0, 팀 공통)
+  #   RESCUE 인 step: -(w_q / T_max) · |F_t \ (R_t ∪ E_t)| / N_T - (w_x / N_T) · |ΔE_t ∩ F_t| - (w_dup / N_T) · 1[할당 충돌]
+  #     대기 · 발견 후 만료는 팀 공통, 할당 충돌 (같은 생존자를 더 가까운 UAV 가 이미 쫓는데 고름, 결정당 1 회, 판정 범위 =
+  #     그룹 + 메모리 노드 기록) 은 개인. w_x > w_q 여야 함 (만료시켜 대기 패널티를 없애는 해킹 방지, 아니면 로드 시 경고)
+  #   RETURN 인 step: 0
+  #   info 에는 역할별로 나눔: reward_rescue = RESCUE 인 step, reward_explore = EXPLORE 인 step 의 r_task
+  #   학습: 결정 단위 SMDP GAE — 네트워크 k 의 결정 t0 ~ t1 = min(같은 UAV 의 같은 네트워크 다음 결정, 그 역할을 벗어나는 step
+  #   (역할 변경 · RETURN)) 까지 γ (최상위 gamma) 할인 누적 + γ^(t1 - t0) V^k(s_t1) bootstrap. 역할을 벗어나 끊기면 GAE 체인도 끊음
+  #   (training/role/ppo.py)
+  rewards:
+    task:
+      w_u: 1.0                  # EXPLORE 팀 미발견 패널티 (/ T_max)
+      w_q: 1.0                  # RESCUE 팀 대기 패널티 (/ T_max)
+      w_x: 2.0                  # RESCUE 발견 후 만료 (/ N_T)
+      w_dup: 0.5                # 할당 충돌 (코드에서 / N_T, 결정당 1 회)
+      w_ts: 0.2                 # 자발적 목표 전환 penalty (/ N_T)
+
+  # ==== 3) frontier 할당 (explore): 덩어리 (DBSCAN) -> 1 단계 덩어리 선택 (점수 차례) -> 같은 덩어리 m 대면 구간 분할 · 2 단계 배정 ====
+  #   2 단계 (같은 덩어리 안 구간 배정) 는 거리 합 최소 1:1 Hungarian (학습 없음): 비용 = UAV 에서 구간 셀까지 BFS 최소 거리
+  #     (기존 goal 우대 없음, 도달 불가 1e6)
+  #   덩어리 쪼개짐 / 합쳐짐: 재결정 없이 소속만 이어 붙임 (쪼개짐 = 내 구간이 가장 많이 남은 조각, 합쳐짐 = 새 덩어리)
+  #   이번 step 누군가 고른 덩어리: 고른 UAV + 기존 배정자 전원을 Hungarian 으로 다시 구간 배정. 아무도 새로 고르지 않은
+  #     덩어리의 기존 배정자는 그대로
+
+  # ---- 덩어리 (frontier DBSCAN, env/role/clusters.py) ----
+  cluster:
+    eps: 1.5                    # DBSCAN 이웃 반경 (유클리드). 1.5 = 8-연결
+    min_samples: 2               # core 셀 조건: 자기 포함 이웃 frontier 수 (미만이고 core 이웃도 아니면 noise 로 버림)
+    k_max: 10                   # F 노드 (덩어리) 슬롯 수 (크기 내림차순 상위)
+
+  # ---- 1 단계 점수 · 2 단계 (env/role/explore.py): 덩어리 선택 -> 같은 덩어리 m 대면 측지 k-medoids 로 구간 분할 -> 구간 배정 ----
+  explore:
+    n_sub_max: 5                # 2 단계 구간 슬롯 수 = 한 덩어리를 나누는 구간 수 상한 (넘는 담당자는 구간 공유). 기본 = UAV 수
+    size_ref: 100               # 덩어리 / 구간 크기 특징 정규화: min(1, log(1+|C|) / log(1+size_ref)). GNN F 노드 · critic 공통
+    match_dilate: 1             # step 간 덩어리 대응: 이전 덩어리 셀을 이 칸만큼 넓혀 겹침 판정 (frontier 1 칸 후퇴 흡수)
+    track_margin: 2             # 소속 덩어리가 사라졌을 때 직전 구간 셀에서 (센서 범위 + 이 값) 이내의 새 덩어리로 이어 붙임
+    kmedoids_iters: 10          # 구간 분할 k-medoids 반복 상한
+                                # 매 step 구간 rebalance (정책 호출 없음): 담당자 m >= 2 인 덩어리를 현재 frontier 전체로
+                                #   k = min(m, |C|) k-medoids 재분할 (각자의 goal 셀 근처로 warm start), 매칭 비용 = goal 이 든
+                                #   구간 0 / 아니면 위치에서 구간까지 BFS. 이동 목표점 = 내 구간 frontier 중 BFS 가장 가까운 셀
+    order_dist_alpha: 2.0       # 1 단계 차례 (policies/decision_order.py explore_front, env · 그리디 · 학습 모델 공통):
+                                #   남은 UAV j x 닿는 덩어리 m 의 모든 쌍 중 점수 (N_m / (n_m + 1)) / (d_jm + 1)^α 최대 쌍이 다음 차례
+                                #   (N = 덩어리 크기, n = 배정 수, d = BFS 칸 수, 한 대마다 n 갱신). 모델 config 로 자동 복사

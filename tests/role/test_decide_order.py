@@ -16,7 +16,7 @@ explore_order (B-3, 점수 (N_m / (n_m + 1)) / (d + 1)^α 최대 쌍, α = 1 —
  [9] 기존 배정자가 있는 덩어리는 n 에 포함 (재결정하지 않는 기존 배정자)
 [10] 학습 경로: 맨 앞 UAV 가 담당 후보 대신 다른 덩어리를 고르면 실제 선택으로 n_m 이 갱신되어 다음 차례가 바뀜
 재결정 (EXPLORE 를 고른 재결정 UAV 는 전원 1 단계, 같은 덩어리 재선택 = 새 표본 아님)
-[12] 이벤트 "1" 에서 R1 -> RESCUE, R2 / R3 EXPLORE: 1 단계에 참여해 같은 덩어리를 다시 고름 -> explore_valid 0 (옵션 계속),
+[12] 이벤트 "1" 에서 R1 -> RESCUE, R2 / R3 EXPLORE: 1 단계에 참여해 같은 덩어리를 다시 고름 -> explore_valid 0 (표본 아님),
      explore keep 2 / 2
 [13] R1 이 빠진 영역은 rebalance 로 다시 나뉘고 남은 UAV 는 자기 goal 쪽 구간 유지
 [14] 구조를 마치고 EXPLORE 로 돌아온 UAV 는 1 단계 참여
@@ -386,7 +386,7 @@ def check_model_order(steps=150):
     from tests.role.smoke_role_policy import base_config, make
     from training.catalog import register_all
     register_all()
-    env, prep, policy = make(base_config(mode=("learned", "learned")))
+    env, prep, policy = make(base_config(mode=("learn", "learn")))
     N = env.n_agents
     n_cmp = 0
     for seed in range(3):

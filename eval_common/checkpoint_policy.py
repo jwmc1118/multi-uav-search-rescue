@@ -4,10 +4,10 @@ gui/grid_map.py (Model 버튼), main_gui.py 가 .step(sim) 으로 쓴다: 모델
 sim.step_explicit() 로 그대로 넣는다 (explore 2 단계는 env 의 거리 Hungarian).
 ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡아 상태메시지로 처리한다.
 
-행동 선택 방식 mode: "greedy" (기본, 두 head argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
+행동 선택 방식 mode: "greedy" (기본, 모든 네트워크 argmax) / "sample" (학습 때와 같은 확률 정책). 이동은 항상 BFS 경로.
 
 실행 환경 설정 두 가지:
-    env_priority=True  (main_gui.py / GUI Model 버튼): 호출자 env_config (main 전용 yaml) 를 그대로 쓴다. 관측 차원 · 네트워크
+    env_priority=True  (main_gui.py / GUI 모델 전환): 호출자 env_config (GUI 전용 yaml) 를 그대로 쓴다. 관측 차원 · 네트워크
                        구조를 정하는 값 (structure_diff) 이 체크포인트와 다르면 어떤 키가 다른지 에러. 입력 정규화 분모
                        (NORM_KEYS) 가 다르면 경고만 (self.warnings).
     env_priority=False (evaluation 스크립트): 호출자 env_config (평가 yaml) 를 그대로 쓰되 SHAPE_KEYS 만 체크포인트 값
@@ -16,8 +16,8 @@ ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡�
 학습 때와 다른 UAV 수 (N) 로 실행:
     모델 파라미터는 N 과 무관하다 (모든 텐서 shape 가 N 독립 — 에이전트 축은 per-agent 공유 모듈 / attention / pooling).
     그래서 체크포인트 config 로 원래 trainer 를 복원해 가중치를 꺼낸 뒤, 실행용 env_config (호출자 UAV 구성) 로
-    새 trainer 를 만들어 가중치를 옮겨 싣는다. actor (ACTOR_PREFIXES) 는 strict 로 전부 일치해야 하고,
-    실행에 안 쓰는 critic / value_norm 은 shape 가 다르면 건너뛴다.
+    새 trainer 를 만들어 가중치를 옮겨 싣는다. 실행에 쓰는 actor (rule 이 아닌 구성요소 — eval_common/model_loader.py
+    actor_prefixes) 는 strict 로 전부 일치해야 하고, 실행에 안 쓰는 critic / value_norm · rule 구성요소 네트워크는 건너뛴다.
 """
 import glob
 import os
@@ -30,7 +30,6 @@ import numpy as np
 SHAPE_KEYS = ("max_targets", "s_max", "state_size", "local_channels", "global_downsample", "rows", "cols", "max_episode_len")
 # 입력 정규화 분모 — 달라도 실행은 되지만 학습 때와 입력 스케일이 달라진다 (env_priority 에서 경고)
 NORM_KEYS = ("max_episode_len", "d_max", "rows", "cols", "explore.size_ref")
-ACTOR_PREFIXES = ("net.role_net.", "net.task_net.")       # 두 actor 네트워크 (critic 제외)
 MODES = ("greedy", "sample")
 
 
@@ -132,8 +131,9 @@ def restore_or_explain(trainer, checkpoint_path):
             f"{RECENT_CHANGES}") from None
 
 
-RECENT_CHANGES = ("    (지금 구조: role / task 두 네트워크, task 후보 S ∪ F, U 노드 12 (linked / age, 메모리 노드), 그룹 context [ρ, η, ν, t / T_max],\n"
-                  "     S–F 간선, task critic = 공유 trunk + V^res / V^exp — 이 구조 전에 저장된 체크포인트는 로드 불가)")
+RECENT_CHANGES = ("    (지금 구조: role / rescue / explore 세 네트워크 (rescue 후보 S, explore 후보 F, query 에 역할 one-hot 없음, critic V^res /\n"
+                  "     V^exp 따로), U 노드 12 (linked / age, 메모리 노드), 그룹 context [ρ, η, ν, t / T_max], S–F 간선 — 이 구조 전에\n"
+                  "     저장된 체크포인트는 rescue / explore 가 learned 면 로드 불가)")
 
 
 def load_train_config(checkpoint_path):
@@ -161,14 +161,15 @@ def resolve_checkpoint(path):
 
 def find_params_json(checkpoint_path):
     """체크포인트의 학습 config(params.json) 위치. 저장 구조에 따라 한두 단계 위에 있다.
-    marl_models/RolePPO/checkpoints/checkpoint_X/checkpoint-X  -> marl_models/RolePPO/params.json
-    marl_models/best_model/<날짜>/checkpoint_X/checkpoint-X    -> marl_models/best_model/<날짜>/params.json"""
+    marl_models/<run>/checkpoints/checkpoint_X/checkpoint-X  -> marl_models/<run>/params.json
+    marl_models/best_model/<종류>/model_vXX/checkpoint_X/checkpoint-X -> marl_models/best_model/<종류>/model_vXX/params.json
+    marl_models/best_model/<종류>/model_vXX/checkpoint-X (폴더 없이)  -> 같은 폴더의 params.json"""
     d = os.path.dirname(os.path.abspath(checkpoint_path))
-    for _ in range(3):
-        d = os.path.dirname(d)
+    for _ in range(4):
         pj = os.path.join(d, "params.json")
         if os.path.isfile(pj):
             return pj
+        d = os.path.dirname(d)
     return None
 
 
@@ -180,17 +181,18 @@ def read_weights(checkpoint_path):
     return {k: v for k, v in state.items() if k.startswith("net.")}
 
 
-def critic_only_mismatch(target, weights, actor_prefixes=ACTOR_PREFIXES):
+def critic_only_mismatch(target, weights, actor_prefixes):
     """actor 파라미터 이름 · shape 가 모두 같고 다른 건 critic / value_norm 뿐인가."""
     a_t = {k: tuple(v.shape) for k, v in target.items() if k.startswith(actor_prefixes)}
     a_w = {k: tuple(np.shape(v)) for k, v in weights.items() if k.startswith(actor_prefixes)}
     return a_t == a_w
 
 
-def load_weights(model, weights, actor_prefixes=ACTOR_PREFIXES):
+def load_weights(model, weights, actor_prefixes):
     """체크포인트 가중치(state_dict)를 다른 UAV 수로 만든 model 에 싣는다.
-    actor (ACTOR_PREFIXES) 는 이름·shape 가 전부 일치해야 하며 (불일치 시 어떤 파라미터인지 에러),
-    critic / value_norm 은 shape 가 다르거나 없으면 건너뛴다 (실행에 안 씀). 반환: 건너뛴 키 목록."""
+    actor_prefixes (실행에 쓰는 actor — model_loader.actor_prefixes(components)) 는 이름·shape 가 전부 일치해야 하며
+    (불일치 시 어떤 파라미터인지 에러), 그 밖 (critic / value_norm, rule 구성요소 네트워크) 은 shape 가 다르거나 없으면
+    건너뛴다 (실행에 안 씀). 반환: 건너뛴 키 목록."""
     import torch
     target = model.state_dict()
     actor_t = {k for k in target if k.startswith(actor_prefixes)}
@@ -216,6 +218,15 @@ def load_weights(model, weights, actor_prefixes=ACTOR_PREFIXES):
     return sorted(set(skipped) | set(missing))
 
 
+def components_config(train_cfg, modes):
+    """학습 config 사본의 model.custom_model_config.components 를 모델의 구성요소 모드 ({role, rescue, explore: rule | learn}) 로 맞춘다 (rule 인 네트워크는 모델이 호출하지 않음 — 그 결정은 env 의 규칙 정책)."""
+    import copy
+    cfg = copy.deepcopy(train_cfg)
+    cmc = cfg.setdefault("model", {}).setdefault("custom_model_config", {})
+    cmc["components"] = dict(modes)
+    return cfg
+
+
 class CheckpointPolicy:
     MODES = MODES
 
@@ -231,18 +242,22 @@ class CheckpointPolicy:
 
         train_cfg = load_train_config(checkpoint_path)
         if not is_role_config(train_cfg):
-            raise RuntimeError(f"예전 구조 (env: {train_cfg.get('env')!r}) 체크포인트는 지원하지 않음 — RolePPO 체크포인트를 쓸 것: "
+            raise RuntimeError(f"예전 구조 (env: {train_cfg.get('env')!r}) 체크포인트는 지원하지 않음 — 계층 구조 (env: rescue_role) 체크포인트를 쓸 것: "
                                f"{checkpoint_path}")
         if not ray.is_initialized():
             ray.init(local_mode=True, ignore_reinit_error=True, num_gpus=0,
                      include_dashboard=False)
         register_all()
 
+        from eval_common.model_loader import actor_prefixes, inspect_model
+        self.components = inspect_model(checkpoint_path).modes           # 통합 task 구조 (rescue / explore 가 rule 아님) 면 여기서 에러
+        prefixes = actor_prefixes(self.components)
+        train_cfg = components_config(train_cfg, self.components)
         train_env = train_cfg.get("env_config", {})
         if env_priority:
             diff = structure_diff(train_cfg, env_config or {}, model_config)
             if diff:
-                raise RuntimeError("체크포인트와 관측 차원 / 네트워크 구조가 다른 설정 (main 전용 yaml 을 체크포인트에 맞추거나 "
+                raise RuntimeError("체크포인트와 관측 차원 / 네트워크 구조가 다른 설정 (GUI 전용 yaml 을 체크포인트에 맞추거나 "
                                    "새로 학습하세요):\n" + "\n".join(f"    {k}: checkpoint {a} vs main {b}" for k, a, b in diff)
                                    + f"\n체크포인트: {checkpoint_path}")
             run_env, self.warnings = dict(env_config), norm_diff(train_env, env_config)
@@ -261,13 +276,13 @@ class CheckpointPolicy:
             weights = src.get_policy().model.state_dict()
         except RuntimeError as e:
             weights = read_weights(checkpoint_path)
-            if not critic_only_mismatch(src.get_policy().model.state_dict(), weights):
+            if not critic_only_mismatch(src.get_policy().model.state_dict(), weights, prefixes):
                 src.stop()
                 raise e
-            print("[checkpoint] critic 입력 차원이 지금 코드와 달라 actor 가중치만 불러옴 (실행에는 critic 을 쓰지 않음)")
+            print("[checkpoint] critic 입력 차원 / rule 구성요소 네트워크가 지금 코드와 달라 실행에 쓰는 actor 가중치만 불러옴")
         # 2) 실행용 env_config 로 trainer 를 만들고 가중치 이식 (UAV 수가 같아도 같은 경로 — 결과는 원래 trainer 와 동일)
         self.trainer = self._make_trainer(train_cfg, run_env)
-        self.skipped = load_weights(self.trainer.get_policy().model, weights)
+        self.skipped = load_weights(self.trainer.get_policy().model, weights, prefixes)
         self.last = None                                # 마지막 결정의 UAV 별 모델 출력 (GUI 표시용)
         src.stop()
         self.checkpoint_path = checkpoint_path
@@ -313,7 +328,7 @@ class CheckpointPolicy:
         if mode not in MODES:
             raise ValueError(f"mode {mode!r} — {MODES}")
         self.mode = mode
-        self.trainer.get_policy().model.greedy = mode == "greedy"     # 두 head 모두 greedy / 샘플링 (이동은 BFS)
+        self.trainer.get_policy().model.greedy = mode == "greedy"     # 모든 네트워크 greedy / 샘플링 (이동은 BFS)
 
     @staticmethod
     def seed(seed):

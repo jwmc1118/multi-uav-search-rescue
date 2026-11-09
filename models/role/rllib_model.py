@@ -6,8 +6,9 @@
 logits 는 순차 디코딩의 결정 시점 마스크가 적용된 값. 행동은 모델이 순차 디코딩으로 뽑은 값을 그대로 쓴다.
 task = 하위 할당 (S 노드 생존자 0 .. T-1 / F 노드 덩어리 T .. T+K-1, 1 단계만 — 2 단계 구간 배정은 env 의 거리 Hungarian).
 학습 forward 는 SampleBatch.ACTIONS (폭 2N, 순서 role | task) 로 디코딩을 재생해 같은 logits 를 만든다.
-value_function() = 실제 스케일 {'role', 'rescue', 'explore'} (B, N) (rescue / explore = task critic 의 역할별 head),
-value_function_norm() = critic 출력 그대로. greedy = True 면 (평가) 두 head 모두 argmax.
+task 행동 하나를 rescue 네트워크 (S 칸) / explore 네트워크 (F 칸) 가 나눠 쓴다 (한 step 에 UAV 당 둘 중 하나만 결정).
+value_function() = 실제 스케일 {'role', 'rescue', 'explore'} (B, N) (네트워크별 critic V^role / V^res / V^exp),
+value_function_norm() = critic 출력 그대로. greedy = True 면 (평가) 모든 네트워크 argmax.
 """
 import numpy as np
 import torch
@@ -24,7 +25,7 @@ from models.role.net import RoleNet, stack_role_obs
 # rollout 시 extra_action_out 으로 저장되는 컬럼 (role 은 RLlib 기본 키 VF_PREDS / ACTION_LOGP)
 VF_PREDS_RESCUE = "vf_preds_rescue"
 VF_PREDS_EXPLORE = "vf_preds_explore"
-ACTION_LOGP_TASK = "action_logp_task"
+ACTION_LOGP_TASK = "action_logp_task"          # task 행동 logp (rescue / explore 결정 공용 칸)
 EXTRA_KEYS = (VF_PREDS_RESCUE, VF_PREDS_EXPLORE, ACTION_LOGP_TASK)
 
 
@@ -33,7 +34,7 @@ def role_dims(orig):
     ag = orig["agents"][0]
     return {"role_self": ag["role_self"].shape[0], "role_group": ag["role_group"].shape[0],
             "critic_task": orig["critic_tasks"].shape[-1], "critic_team": orig["critic_team"].shape[-1],
-            "critic_global": orig["critic_global"].shape[-1]}
+            "critic_global": orig["critic_global"].shape[-1], "critic_task_global": orig["critic_task_global"].shape[-1]}
 
 
 class RoleModel(TorchModelV2, nn.Module):

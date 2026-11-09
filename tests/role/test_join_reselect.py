@@ -9,7 +9,7 @@
  [4] m 감소 (배정자가 떠남): 정책 호출 없이 매 step rebalance 매칭으로 처리, 남은 배정자 goal 유지
  [5] 참여자 2 명 · 구간 2 개: 두 번째 차례는 후보 1 개 -> Hungarian 호출 없이 남은 구간
  [6] 학습 정책 rollout: explore 결정 = 1 단계뿐 (explore_valid = explore_valid_s1 - 같은 덩어리 재선택 explore_keep),
-     합류 재배정된 기존 배정자는 결정 · 학습 sample 이 아니고 (explore_valid 0) explore 옵션이 계속된다 (explore_active 1)
+     합류 재배정된 기존 배정자는 결정 · 학습 sample 이 아니고 (explore_valid 0) 계속 EXPLORE 다
 """
 import numpy as np
 
@@ -157,7 +157,7 @@ def check_model():
     from tests.role.smoke_role_policy import base_config, make
     from training.catalog import register_all
     register_all()
-    env, prep, policy = make(base_config(mode=("learned", "learned")))
+    env, prep, policy = make(base_config(mode=("learn", "learn")))
     n_re = n_s1 = n_keep = 0
     for seed in range(6):
         env.seed(seed)
@@ -173,13 +173,13 @@ def check_model():
             for i, r in enumerate(info["explore_reselect"]):
                 if r > 0:
                     n_re += 1
-                    assert info["explore_valid"][i] == 0 and info["explore_train"][i] == 0 and info["explore_active"][i] == 1
+                    assert info["explore_valid"][i] == 0 and info["explore_train"][i] == 0 and info["role"][i] == Mode.EXPLORE.value
             if done:
                 break
     assert n_re > 0 and n_s1 > 0, (n_re, n_s1)
     print(f"[6] learned rollouts: explore decisions = stage 1 only ({n_s1}, of which {n_keep} same-blob keeps are not samples); "
           f"{n_re} join re-assignments are not decisions "
-          f"(explore_valid 0) and keep the explore option (explore_active 1)")
+          f"(explore_valid 0) and stay EXPLORE")
 
 
 if __name__ == "__main__":

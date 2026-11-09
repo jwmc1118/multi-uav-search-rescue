@@ -1,5 +1,5 @@
 """이종 그래프 관측 사양 — env (env/role/simulation.py rl_observation) 이 재료를 만들고 모델 (models/role/net.py) 이
-결정 UAV 마다 그래프로 조립한다. 두 네트워크 (역할 선택 / task (하위 할당)) 가 같은 노드 · 관계 구성의 그래프를 각자 encoder · GNN 으로 계산.
+결정 UAV 마다 그래프로 조립한다. 세 네트워크 (역할 선택 / rescue / explore) 가 같은 노드 · 관계 구성의 그래프를 각자 encoder · GNN 으로 계산.
 
 정보 구조 (belief): UAV i 는 자기 n-hop 통신 그룹의 병합된 지식으로 그래프를 만들고 GNN 은 그 위에서 로컬로 계산한다
 (GNN 층 = 통신 라운드가 아님). 그룹이 모르는 생존자는 그래프에 없다. 그룹 밖 UAV 는 마지막 기록이 있으면 메모리 노드로 들어간다.
@@ -31,11 +31,12 @@ depot 은 노드가 아니다 (U 노드의 depot BFS 특징 · σ 의 depot 경�
     F–F  kNN Δx, Δy (두 덩어리의 p^f 차이), 가장 가까운 셀끼리 BFS                                                   = 3
     S–F  생존자마다 가장 가까운 덩어리 kNN (같은 규칙) [p_m^f - p_k^s (2, p^f = 위 c*), 생존자에서 덩어리의 가장 가까운 셀까지 BFS]  = 3
 메모리 노드의 특징 · U–U / U–S / U–F 간선은 마지막 기록 (위치, 용량, 역할, 목표 생존자 / 목표 위치, depot BFS, ω^g, t_last)
-값으로 계산 (σ = 기록된 위치 · 용량, BFS 는 지금 그룹 지도). 마스크 · 결정 순서 · ω^g · 보상 · 이벤트에는 쓰지 않는다.
-네트워크 (models/role/net.py) — 둘 다 노드 U · S · F, 관계 S→U, U→S, F→U, U→F, U→U, S→S, F→F, S→F, F→S (U–S, U–F 간선 층마다 갱신)
+값으로 계산 (σ = 기록된 위치 · 용량, BFS 는 지금 그룹 지도). 마스크 · 결정 순서 · ω^g · 이벤트에는 쓰지 않는다 (보상은 task 할당 충돌 판정에만, env/role/simulation.py _check_dup).
+네트워크 (models/role/net.py) — 세 네트워크 모두 노드 U · S · F, 관계 S→U, U→S, F→U, U→F, U→U, S→S, F→F, S→F, F→S (U–S, U–F 간선
+층마다 갱신), 파라미터는 네트워크마다 따로
     역할 선택   logits = ξ_dec(h_i ‖ ξ_ctx(c_i)) -> 3
-    task (하위 할당)   후보 = S ∪ F pointer attention (RESCUE 면 S 만, EXPLORE 면 F 만 마스크 해제). 1 단계만 — 2 단계 구간 배정은 env 의
-                거리 Hungarian
+    rescue      후보 = S pointer attention (key 에 U–S 간선)
+    explore     후보 = F pointer attention (key 에 U–F 간선). 1 단계만 — 2 단계 구간 배정은 env 의 거리 Hungarian
 목표 지점 g_l: RESCUE = 목표 생존자, EXPLORE = 세그먼트 medoid (없으면 goal 셀), RETURN = depot, 없으면 현재 위치
 (순차 디코딩 중 이번 이벤트에 1 단계를 고른 UAV 는 고른 덩어리의 p^f = 그 UAV 에게 가장 가까운 셀).
 S 노드 순서 (UAV 마다): i 의 할당 가능 후보 (아직 아무도 맡지 않음 · 시간 안에 닿음, BFS 가까운 순) 먼저 -> 나머지 아는 생존자

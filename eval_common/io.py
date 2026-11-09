@@ -57,7 +57,14 @@ def write_json(path, obj):
 
 
 def latex_table(path, header, rows, col_align=None, caption=None, label=None):
-    """booktabs 표. header = [열 이름], rows = [[셀 문자열]] (굵게는 호출부가 \\textbf{...})."""
+    """booktabs 표 하나를 path 에 쓴다 (latex_block)."""
+    with open(path, "w") as f:
+        f.write(latex_block(header, rows, col_align, caption, label))
+    return path
+
+
+def latex_block(header, rows, col_align=None, caption=None, label=None):
+    """booktabs 표 (table 환경) 문자열. header = [열 이름], rows = [[셀 문자열]] (굵게는 호출부가 \\textbf{...})."""
     col_align = col_align or ("l" + "r" * (len(header) - 1))
     lines = ["\\begin{table}[t]", "\\centering"]
     if caption:
@@ -67,6 +74,4 @@ def latex_table(path, header, rows, col_align=None, caption=None, label=None):
     lines += [f"\\begin{{tabular}}{{{col_align}}}", "\\toprule", " & ".join(header) + " \\\\", "\\midrule"]
     lines += [" & ".join(r) + " \\\\" for r in rows]
     lines += ["\\bottomrule", "\\end{tabular}", "\\end{table}"]
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    return path
+    return "\n".join(lines) + "\n"

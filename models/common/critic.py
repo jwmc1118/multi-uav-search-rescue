@@ -1,4 +1,4 @@
-"""CTDE critic (학습 전용, 실행 시 제거) — models/role/net.py 가 role (V^role) 과 task (하위 할당) (공유 trunk + V^res, V^exp) 에 쓴다.
+"""CTDE critic (학습 전용, 실행 시 제거) — models/role/net.py 가 네트워크마다 하나씩 (V^role / V^res / V^exp) 쓴다.
 
 privileged ground truth + 팀원 행동:
     V_i = MLP( CNN_gap(S) ⊕ CNN_flat(o_i) ⊕ extra_i ⊕ task_ctx_i ⊕ team_ctx_i ⊕ global )
@@ -8,9 +8,8 @@ privileged ground truth + 팀원 행동:
                  (선택 슬롯 타입 one-hot + 선택 노드 좌표, 자기 행은 0 으로 가림 -> V(s, a^{-i})) 임베딩, mean ⊕ max pooling
     global     : critic_global
 
-- actor 와 인코더를 공유하지 않는다 (value loss gradient 가 actor 를 흔들지 않게). 네트워크마다 인스턴스 따로
-  (n_out = value head 수: task critic 은 2 — trunk 공유, 마지막 선형층이 head 별).
-- extra_i: 헤드별 입력 (role 관측 [+ 노드 특징], models/role/net.py).
+- actor 와 인코더를 공유하지 않는다 (value loss gradient 가 actor 를 흔들지 않게). 네트워크마다 인스턴스 따로 (trunk 비공유).
+- extra_i: 네트워크별 입력 (role: [role_self, role_group], rescue / explore: + 전역 g_t, models/role/net.py).
 """
 import math
 
@@ -61,7 +60,7 @@ class RichCentralCritic(nn.Module):
 
     def __init__(self, state_channels, local_channels, local_hw, extra_dim, state_dim, local_dim, filters,
                  hidden=(128, 64), activation=nn.ReLU, set_dim=64, set_heads=4,
-                 task_dim=CRITIC_TASK_DIM, team_dim=CRITIC_TEAM_DIM, global_dim=CRITIC_GLOBAL_DIM, n_out=1):
+                 task_dim=CRITIC_TASK_DIM, team_dim=CRITIC_TEAM_DIM, global_dim=CRITIC_GLOBAL_DIM):
         super().__init__()
         self.state_cnn = GridCNN(state_channels, state_dim, filters=filters, activation=activation,
                                  global_pool=True)
@@ -71,13 +70,12 @@ class RichCentralCritic(nn.Module):
         self.self_embed = MLP(SELF_FEAT_DIM, (set_dim,), set_dim, activation)
         self.task_attn = SetAttentionPool(set_dim, set_heads)
         self.team_embed = MLP(team_dim + 1 + 2 + TEAM_ACT_DIM, (set_dim,), set_dim, activation)
-        self.n_out = int(n_out)                                                  # value head 수 (공유 trunk 위)
-        self.value = MLP(state_dim + local_dim + extra_dim + 4 * set_dim + global_dim, hidden, self.n_out, activation)
+        self.value = MLP(state_dim + local_dim + extra_dim + 4 * set_dim + global_dim, hidden, 1, activation)
         self.input_dim = state_dim + local_dim + extra_dim + 4 * set_dim + global_dim
 
     def forward(self, state_map, local_map, extra, self_feats, tasks, task_present, team, team_act, glob):
         """self_feats (B,N,3) | tasks (B,T,Ft) | task_present (B,T) | team (B,N,Fm) | team_act (B,N,5) | glob (B,G)
-        -> V (B,N) (n_out 1) / (B,N,n_out) (value head 여러 개 — trunk 공유, 마지막 선형층만 head 별)"""
+        -> V (B,N)"""
         B, N = local_map.shape[:2]
         T = tasks.shape[1]
         sf = self.state_cnn(state_map).unsqueeze(1).expand(B, N, -1)
@@ -104,4 +102,4 @@ class RichCentralCritic(nn.Module):
         g = glob.unsqueeze(1).expand(B, N, glob.shape[-1])
         x = torch.cat([sf, lf, extra, att, mean_t, team_ctx, g], dim=-1)
         v = self.value(x)
-        return v.squeeze(-1) if self.n_out == 1 else v
+        return v.squeeze(-1)

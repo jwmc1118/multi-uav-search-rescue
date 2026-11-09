@@ -1,24 +1,30 @@
-"""RoleNet — 계층 구조 env (env/role/simulation.py) 용 Role / task (하위 할당) actor + critic (순수 torch).
+"""RoleNet — 계층 구조 env (env/role/simulation.py) 용 Role / Rescue / Explore actor + critic (순수 torch).
 
-독립된 네트워크 2 개 (encoder · GNN 파라미터 공유 없음, models/role/gnn.py HeteroGNN, 그래프 사양 env/role/graph_obs.py).
-두 네트워크의 그래프는 같은 구성:
+독립된 네트워크 3 개 (encoder · GNN · decoder · critic 파라미터 공유 없음, models/role/gnn.py HeteroGNN, 그래프 사양
+env/role/graph_obs.py). 세 네트워크의 그래프는 같은 구성:
     노드 U (현재 그룹 = 연결 노드 + 그룹 밖 UAV 의 마지막 기록 = 메모리 노드, 역할 무관) · S (생존자) · F (frontier 덩어리)
     관계 S→U, U→S, F→U, U→F, U→U, S→S, F→F, S→F, F→S, U–S / U–F 간선 층마다 갱신
     encoder = 노드 종류별 · 간선 종류별 2 층 MLP (ReLU) -> D, 그룹 context c_i = [ρ_i, η_i, ν_i, t / T_max] 는 ξ_ctx (2 층 MLP) -> D
 [역할 선택]   logits = ξ^role_dec( h_i^(L) ‖ ξ_ctx(c_i) ) ∈ R^3 -> role_mask -> softmax
-[task (하위 할당)]   후보 = S ∪ F (행동 = S 인덱스 / s_max + F 인덱스), pointer attention
-              q_i = W_Q [h_i^(L) ‖ r_i ‖ ξ_ctx(c_i)] (r_i = 방금 고른 역할 one-hot), k_j = W_K [h_j^(L) ‖ e_ij^(L)]
-              (j ∈ S: U–S 간선, j ∈ F: U–F 간선), u_ij = C tanh(q_iᵀ k_j / √D), π(j | i) = softmax_{S ∪ F}(u_ij + M_ij)
-              M: RESCUE -> rescue_mask 생존자만 (F 전부 차단, 같은 그룹 앞 차례가 고른 생존자 제외), EXPLORE -> explore_mask
-              덩어리만 (S 전부 차단, 같은 덩어리 중복 허용). 1 단계만 — 2 단계 구간 배정은 env 의 거리 Hungarian.
-[Critic]      models/common/critic.py RichCentralCritic (actor 와 인코더 비공유)
-              role : V^role (extra = [role_self, role_group]) + ValueNorm
-              할당 : 공유 trunk + value head 2 개 (V^res, V^exp) + ValueNorm 2 개 (역할별)
-                     extra = [role_self, role_group] ‖ 고른 S 특징 (6) ‖ 고른 F 특징 (5) (rescue / explore critic 입력의 합집합)
+[rescue]      후보 = S (생존자), pointer attention q_i = W_Q [h_i^(L) ‖ ξ_ctx(c_i)], k_j = W_K [h_j^(L) ‖ e_ij^(L)] (U–S 간선),
+              u_ij = C tanh(q_iᵀ k_j / √D), π(j | i) = softmax_S(u_ij + M_ij), M = rescue_mask (같은 그룹 앞 차례가 고른 생존자 제외)
+[explore]     후보 = F (덩어리), 같은 pointer 구조 (U–F 간선), M = explore_mask (같은 덩어리 중복 허용). 1 단계만 — 2 단계 구간
+              배정은 env 의 거리 Hungarian
+              (역할이 네트워크로 나뉘므로 query 에 역할 one-hot 은 넣지 않는다)
+              행동 공간은 env 와 같은 task 하나 (0 .. s_max - 1 = S, s_max .. s_max + k_max - 1 = F) — rescue 는 S 칸, explore 는 F 칸만 연다
+[Critic]      models/common/critic.py RichCentralCritic (actor 와 인코더 비공유, 네트워크마다 따로 · trunk 비공유)
+              role    : V^role (extra = [role_self, role_group]) + ValueNorm
+              rescue  : V^res  (extra = [role_self, role_group] ‖ 전역 g_t) + ValueNorm
+              explore : V^exp  (extra = [role_self, role_group] ‖ 전역 g_t) + ValueNorm
+                        g_t = critic_task_global (3: 미발견 비율, 대기 비율, t / T_max — 학습 전용, actor 는 읽지 않음).
+                        V^res / V^exp 는 상태 가치 (고른 행동 특징 없음) — 역할을 벗어난 시점 bootstrap 에도 같은 입력
+components (custom_model_config, train.py 가 env.yaml components 에서 넣음): role / rescue / explore 각각 rule | learn.
+    rule  : 호출하지 않음 (그 결정은 env 의 규칙 정책), 파라미터 requires_grad False. role 이 rule 이면 rescue / explore 도 rule
+    learn : 학습 (rollout 은 샘플링). greedy (평가) 면 모든 네트워크 argmax
 
 순차 디코딩 — env _decide 와 같은 흐름 · 같은 차례 함수 (policies/decision_order.py, 한 대가 결정할 때마다 다시 계산):
-  [1] role_front 차례 -> 역할 선택 네트워크 -> RESCUE 면 바로 task 네트워크 (r = RESCUE, 역할 반영 후 그래프를 따로 계산)
-  [2] EXPLORE 를 고른 재결정 UAV 전원을 explore_front 차례로 -> task 네트워크 (r = EXPLORE, 지금 덩어리도 후보). 차례 계산의
+  [1] role_front 차례 -> 역할 선택 네트워크 -> RESCUE 면 바로 rescue 네트워크 (역할 반영 후 그래프를 따로 계산)
+  [2] EXPLORE 를 고른 재결정 UAV 전원을 explore_front 차례로 -> explore 네트워크 (지금 덩어리도 후보). 차례 계산의
       배정 수 n_k = 재결정하지 않는 기존 배정자 (관측 k_n) + 이번 이벤트 앞 차례
   결정마다 역할 · 목표 (RESCUE = 생존자, RETURN = depot, EXPLORE 1 단계 = 고른 덩어리의 F 노드 위치 p^f) 를 연결 노드 상태에 반영하고 다음
   차례 그래프를 다시 만든다 (메모리 노드는 마지막 기록 그대로). 학습 재생 (taken = SampleBatch.ACTIONS) 도 같은 루프.
@@ -40,29 +46,31 @@ from models.common.value_norm import ValueNorm
 MASK_VALUE = -1e9          # 마스크된 후보 / 역할의 logit
 ROLE_EXPLORE, ROLE_RESCUE, ROLE_RETURN = 0, 1, 2
 N_ROLES = 3
-POLICY_HEADS = ("role", "task")                 # actor 네트워크 (학습 head)
-VALUE_HEADS = ("role", "rescue", "explore")      # value head (rescue / explore = task critic 의 역할별 head)
-RES_FEAT_DIM = 6          # critic 용 고른 S 특징: rel_pos(2), (τ - t) / T, 맡겨짐, BFS / d_max, slack
-EXP_FEAT_DIM = 5          # critic 용 고른 F 특징: rel_pos(2), 크기, 배정 수 / N, BFS / d_max
+NETWORKS = ("role", "rescue", "explore")        # actor 네트워크 = value head (네트워크마다 critic 1 개)
+COMPONENT_MODES = ("rule", "learn")
 
 GNN_DEFAULTS = {"embed_dim": 128, "n_layers": 2, "knn_k": 6, "s_max": 16, "attn_heads": 4}
 CRITIC_DEFAULTS = {"cnn_filters": [[16, 3, 2], [32, 3, 2], [64, 3, 1]], "state_features": 128, "local_features": 64,
                    "hidden": [128, 64], "set_dim": 64, "set_heads": 4}
-# 네트워크별 기본값 (custom_model_config.role / task 으로 덮어씀)
+# 네트워크별 기본값 (custom_model_config.role / rescue / explore 으로 덮어씀). role 의 lr · clip_param = 최상위 lr · clip_param
+_POINTER = {"pointer_clip": 10.0,               # pointer tanh clip C
+            "entropy_coeff": 0.01,              # 엔트로피 보너스 계수
+            "lr": 3.0e-5,                       # 학습률 (optimizer param group, lr_schedule 은 배율로 — training/role/ppo.py)
+            "clip_param": 0.1,                  # PPO clip 범위
+            "value_norm": True,
+            "critic": CRITIC_DEFAULTS}
 NET_DEFAULTS = {
     "role": {"entropy_coeff": 0.01, "value_norm": True, "critic": CRITIC_DEFAULTS},
-    "task": {"clip": 10.0,                      # pointer tanh clip C
-              "entropy_coeff_rescue": 0.01,      # RESCUE 표본 엔트로피 보너스 계수
-              "entropy_coeff_explore": 0.01,     # EXPLORE 표본 엔트로피 보너스 계수
-              "value_norm": True,                # 역할별 ValueNorm (V^res, V^exp)
-              "critic": CRITIC_DEFAULTS},
+    "rescue": _POINTER,
+    "explore": _POINTER,
 }
-LOSS_DEFAULTS = {"lambda_role": 1.0, "lambda_task": 1.0}  # L = λ_role L^role + λ_task L^task
+LOSS_DEFAULTS = {"lambda_role": 1.0, "lambda_rescue": 1.0, "lambda_explore": 1.0}   # L = Σ_k λ_k L^k
 DEFAULT_ROLE_MODEL_OPTIONS = {"activation": "relu",
-                              "order_dist_alpha": 1.0}   # explore 1 단계 차례의 α — env_config.explore.order_dist_alpha 와 같아야
+                              "order_dist_alpha": 1.0,   # explore 1 단계 차례의 α — env_config.explore.order_dist_alpha 와 같아야
                                                          #   함 (training/config_loader.py 가 복사, 파라미터 아님)
+                              "components": {"role": "learn", "rescue": "learn", "explore": "learn"}}   # rule | learn
 
-# 간선 BASE 방향 (a 행, b 열) 과 관계 (이름, src, dst, 간선 키) — 두 네트워크 공통
+# 간선 BASE 방향 (a 행, b 열) 과 관계 (이름, src, dst, 간선 키) — 세 네트워크 공통
 BASE = {"UU": ("U", "U"), "US": ("U", "S"), "UF": ("U", "F"), "SS": ("S", "S"), "FF": ("F", "F"), "SF": ("S", "F")}
 RELATIONS = (("S2U", "S", "U", "US"), ("U2S", "U", "S", "US"), ("F2U", "F", "U", "UF"), ("U2F", "U", "F", "UF"),
              ("U2U", "U", "U", "UU"), ("S2S", "S", "S", "SS"), ("F2F", "F", "F", "FF"),
@@ -73,13 +81,21 @@ EDGE_UPDATE = ("US", "UF")
 
 
 def resolve_model_options(options):
-    """custom_model_config -> {'activation', 'order_dist_alpha', 'gnn': {...}, 'role': {...}, 'task': {...}, 'loss': {...}}.
-    모르는 키 (예전 config 에 남은 삭제된 항목) 는 무시."""
+    """custom_model_config -> {'activation', 'order_dist_alpha', 'components', 'gnn': {...}, 'role' / 'rescue' / 'explore': {...},
+    'loss': {...}}. 모르는 키 (예전 config 에 남은 삭제된 항목) 는 무시."""
     options = dict(options or {})
     out = copy.deepcopy(DEFAULT_ROLE_MODEL_OPTIONS)
-    out.update({k: options[k] for k in DEFAULT_ROLE_MODEL_OPTIONS if k in options})
+    out.update({k: options[k] for k in DEFAULT_ROLE_MODEL_OPTIONS if k in options and k != "components"})
+    out["components"] = dict(DEFAULT_ROLE_MODEL_OPTIONS["components"],
+                             **{k: v for k, v in (options.get("components") or {}).items() if k in NETWORKS})
+    bad = {k: v for k, v in out["components"].items() if v not in COMPONENT_MODES}
+    if bad:
+        raise ValueError(f"components {bad} — {COMPONENT_MODES}")
+    if out["components"]["role"] == "rule" and set(out["components"].values()) != {"rule"}:
+        raise ValueError(f"components {out['components']} — role 이 rule 이면 rescue / explore 도 rule (모델의 하위 할당 차례는 "
+                         f"모델의 role 결정을 따름)")
     out["gnn"] = dict(GNN_DEFAULTS, **{k: v for k, v in (options.get("gnn") or {}).items() if k in GNN_DEFAULTS})
-    for h in POLICY_HEADS:
+    for h in NETWORKS:
         hc = copy.deepcopy(NET_DEFAULTS[h])
         given = copy.deepcopy(options.get(h) or {})
         hc["critic"].update({k: v for k, v in (given.pop("critic", {}) or {}).items() if k in CRITIC_DEFAULTS})
@@ -96,7 +112,7 @@ AGENT_KEYS = ("local", "role_self", "role_group", "role_mask", "role_needed",
               "mem_target")
 TEAM_KEYS = ("team_ctx", "team_cap", "team_comm", "team_target", "team_slot", "team_gpos", "team_depot_d", "depot_pos",
              "team_rho", "team_eta", "team_nu", "team_time", "team_omega", "geo", "group", "time", "state",
-             "critic_tasks", "critic_task_present", "critic_team", "critic_global")
+             "critic_tasks", "critic_task_present", "critic_team", "critic_global", "critic_task_global")
 
 
 def stack_role_obs(obs):
@@ -165,28 +181,28 @@ class RoleNetwork(GraphNetwork):
         return self.dec(torch.cat([h["U"][r, gr["ii"]], c], -1)), h
 
 
-class TaskNetwork(GraphNetwork):
-    """task (하위 할당): 후보 S ∪ F pointer attention u_ij = C tanh(q_iᵀ k_j / √D), q_i = W_Q [h_i ‖ r_i ‖ ξ_ctx(c_i)],
-    k_j = W_K [h_j ‖ e_ij] (j ∈ S: U–S 간선, j ∈ F: U–F 간선). 마스크는 호출부."""
+class PointerNetwork(GraphNetwork):
+    """rescue / explore: 후보 노드 종류 하나 (cand = S 또는 F) 의 pointer attention u_ij = C tanh(q_iᵀ k_j / √D),
+    q_i = W_Q [h_i ‖ ξ_ctx(c_i)], k_j = W_K [h_j ‖ e_ij] (edge = U–S 또는 U–F 간선). 마스크는 호출부."""
 
-    def __init__(self, D, g, clip):
+    def __init__(self, D, g, clip, cand, edge):
         super().__init__(D, g)
-        self.D, self.clip = D, float(clip)
-        self.w_q = nn.Linear(2 * D + N_ROLES, D)
+        self.D, self.clip, self.cand, self.edge = D, float(clip), cand, edge
+        self.w_q = nn.Linear(2 * D, D)
         self.w_k = nn.Linear(2 * D, D)
 
     def forward(self, gr):
         h, e, r, c = self.encode(gr)
         ii = gr["ii"]
-        q = self.w_q(torch.cat([h["U"][r, ii], gr["r"], c], -1))
-        cand = torch.cat([torch.cat([h["S"], e["US"][r, ii]], -1), torch.cat([h["F"], e["UF"][r, ii]], -1)], 1)
+        q = self.w_q(torch.cat([h["U"][r, ii], c], -1))
+        cand = torch.cat([h[self.cand], e[self.edge][r, ii]], -1)
         u = (q.unsqueeze(1) * self.w_k(cand)).sum(-1) / math.sqrt(self.D)
         return self.clip * torch.tanh(u), h
 
 
 class RoleNet(nn.Module):
     def __init__(self, n_agents, s_max, k_max, local_size, local_channels, state_channels, dims, options=None):
-        """dims: {role_self, role_group, critic_task, critic_team, critic_global}."""
+        """dims: {role_self, role_group, critic_task, critic_team, critic_global, critic_task_global}."""
         super().__init__()
         cfg = resolve_model_options(options)
         self.cfg = cfg
@@ -198,45 +214,42 @@ class RoleNet(nn.Module):
         D = int(g["embed_dim"])
         self.D, self.knn_k = D, int(g["knn_k"])
         self.role_net = RoleNetwork(D, g)
-        self.task_net = TaskNetwork(D, g, cfg["task"]["clip"])
+        self.rescue_net = PointerNetwork(D, g, cfg["rescue"]["pointer_clip"], "S", "US")
+        self.explore_net = PointerNetwork(D, g, cfg["explore"]["pointer_clip"], "F", "UF")
+        self.modes = dict(cfg["components"])
         role_ctx = dims["role_self"] + dims["role_group"]
 
-        def critic(hc, extra, n_out=1):
+        def critic(hc, extra):
             c = hc["critic"]
             return RichCentralCritic(extra_dim=extra, state_channels=state_channels, local_channels=local_channels,
                                      local_hw=(local_size, local_size), state_dim=c["state_features"],
                                      local_dim=c["local_features"], filters=tuple(tuple(f) for f in c["cnn_filters"]),
                                      hidden=tuple(c["hidden"]), activation=act, set_dim=c["set_dim"],
                                      set_heads=c["set_heads"], task_dim=dims.get("critic_task", CRITIC_TASK_DIM),
-                                     team_dim=dims["critic_team"], global_dim=dims.get("critic_global", CRITIC_GLOBAL_DIM),
-                                     n_out=n_out)
+                                     team_dim=dims["critic_team"], global_dim=dims.get("critic_global", CRITIC_GLOBAL_DIM))
         self.critic_role = critic(cfg["role"], role_ctx)
-        self.critic_task = critic(cfg["task"], role_ctx + RES_FEAT_DIM + EXP_FEAT_DIM, n_out=2)   # [V^res, V^exp]
+        self.critic_rescue = critic(cfg["rescue"], role_ctx + dims["critic_task_global"])     # V^res (+ 전역 g_t, 학습 전용)
+        self.critic_explore = critic(cfg["explore"], role_ctx + dims["critic_task_global"])   # V^exp (+ 전역 g_t, 학습 전용)
+        for k in (k for k in NETWORKS if self.modes[k] == "rule"):   # rule: 학습되지 않음 (ppo.py optimizer_fn 도 제외)
+            for p in list(self.head_networks()[k].parameters()) + list(getattr(self, f"critic_{k}").parameters()):
+                p.requires_grad_(False)
         self.debug_trace = None              # 리스트를 넣으면 순차 디코딩 차례별 그래프 / 임베딩을 기록 (테스트용)
         self.timing = None                   # dict 를 넣으면 GNN 호출 수 / 결정 수 / 시간을 더한다 (G 로그)
-        if cfg["role"]["value_norm"]:
-            self.value_norm_role = ValueNorm()
-        if cfg["task"]["value_norm"]:       # 역할별 ValueNorm 2 개
-            self.value_norm_rescue = ValueNorm()
-            self.value_norm_explore = ValueNorm()
+        for k in NETWORKS:
+            if cfg[k]["value_norm"]:
+                setattr(self, f"value_norm_{k}", ValueNorm())
 
     def head_networks(self):
-        """{head: 그 head 의 actor 네트워크} — 두 네트워크는 파라미터를 공유하지 않는다."""
-        return {"role": self.role_net, "task": self.task_net}
-
-    def encoder_parameters(self):
-        """{head: 그 네트워크의 encoder + GNN 파라미터} (gradient norm 측정용)."""
-        return {h: list(n.gnn.parameters()) for h, n in self.head_networks().items()}
+        """{네트워크 이름: actor 네트워크} — 세 네트워크는 파라미터를 공유하지 않는다."""
+        return {"role": self.role_net, "rescue": self.rescue_net, "explore": self.explore_net}
 
     def value_norms(self):
         """{value head: ValueNorm 또는 None}."""
-        return {h: getattr(self, f"value_norm_{h}", None) for h in VALUE_HEADS}
+        return {h: getattr(self, f"value_norm_{h}", None) for h in NETWORKS}
 
     def entropy_coeffs(self):
-        """{value head (= 표본 종류): 엔트로피 계수} — role / RESCUE 표본 / EXPLORE 표본."""
-        a = self.cfg["task"]
-        return {"role": float(self.cfg["role"]["entropy_coeff"]), "rescue": float(a["entropy_coeff_rescue"]),
-                "explore": float(a["entropy_coeff_explore"])}
+        """{네트워크: 엔트로피 계수}."""
+        return {k: float(self.cfg[k]["entropy_coeff"]) for k in NETWORKS}
 
     def module_groups(self):
         """파라미터 집계용: 네트워크별 GNN (encoder 포함) / decoder (context encoder 포함), critic."""
@@ -244,8 +257,8 @@ class RoleNet(nn.Module):
         for h, n in self.head_networks().items():
             out[f"{h}.gnn"] = [n.gnn]
             out[f"{h}.decoder"] = [m for m in n.children() if m is not n.gnn]
-        out["critic.role"] = [self.critic_role]
-        out["critic.task"] = [self.critic_task]
+        for k in NETWORKS:
+            out[f"critic.{k}"] = [getattr(self, f"critic_{k}")]
         return out
 
     # ------------------------------------------------------------ forward
@@ -253,7 +266,7 @@ class RoleNet(nn.Module):
     def forward(self, ob, taken=None, greedy=False):
         """ob: stack_role_obs() 결과. taken: {'role', 'task'} (B,N) long — 학습 재생 시 실제 행동.
         반환: logits {role (B,N,3), task (B,N,T+K)} (결정 시점 마스크 적용), actions {role, task} (B,N),
-        stage {'s1', 'rescue', 'rank'}, values / values_norm {role, rescue, explore} (B,N)."""
+        stage {'s1', 'rescue', 'rank'}, values / values_norm {role, rescue, explore} (B,N) (rule 인 네트워크는 0)."""
         B, N = ob["role_self"].shape[:2]
         T, K, dev = self.T, self.K, ob["role_self"].device
         role_ctx = torch.cat([ob["role_self"], ob["role_group"]], dim=-1)
@@ -293,7 +306,7 @@ class RoleNet(nn.Module):
         def choose(logits, head, bi, ii):
             if taken is not None:
                 return taken[head][bi, ii].long().clamp(0, logits.shape[-1] - 1)
-            if greedy:
+            if greedy:                                                  # 평가 = argmax
                 return logits.argmax(-1)
             return torch.distributions.Categorical(logits=logits.detach()).sample()
 
@@ -301,8 +314,8 @@ class RoleNet(nn.Module):
             same = (ids[:, :, None, :] == picked[:, None, :, None]) & (picked[:, None, :, None] >= 0)
             return (same & group[..., None] & done[:, None, :, None]).any(dim=2)
 
-        def build(bi, ii, r=None):
-            """(bi, ii) 차례 UAV 들 (G 개) 의 그래프 — U (연결 + 메모리) · S · F. r = task 네트워크의 역할 one-hot."""
+        def build(bi, ii):
+            """(bi, ii) 차례 UAV 들 (G 개) 의 그래프 — U (연결 + 메모리) · S · F."""
             A = lambda k: ob[k][bi, ii]
             link = group[bi, ii]                                            # 연결 노드 (현재 그룹)
             memn = (A("mem_valid") > 0.5) & ~link                           # 메모리 노드 (그룹 밖 마지막 기록)
@@ -339,10 +352,7 @@ class RoleNet(nn.Module):
             adj = {"UU": mU[:, :, None] & mU[:, None, :] & ~eye, "US": mU[:, :, None] & mS[:, None, :],
                    "UF": mU[:, :, None] & mF[:, None, :], "SS": knn_adj(A("ss_dist"), mS, self.knn_k),
                    "FF": knn_adj(A("kk_dist"), mF, self.knn_k), "SF": knn_adj(A("sf_dist"), mS, self.knn_k, mF)}
-            gr = {"bi": bi, "ii": ii, "ctx": ctx[bi, ii], "x": x, "mask": mask, "edge": edge, "adj": adj}
-            if r is not None:
-                gr["r"] = Fn.one_hot(torch.full_like(ii, r), N_ROLES).float()
-            return gr
+            return {"bi": bi, "ii": ii, "ctx": ctx[bi, ii], "x": x, "mask": mask, "edge": edge, "adj": adj}
 
         def run(net, gr):
             if self.timing is not None:
@@ -363,10 +373,12 @@ class RoleNet(nn.Module):
                 self.debug_trace.append({"stage": stage, "sel": sel.clone(), "graph": gr, "h": h, "logits": lg})
 
         rank = {k: torch.zeros(B, N, dtype=torch.long, device=dev) for k in ("role", "s1")}   # 실제 차례 (1, 2, ...)
-        # ---- [1] role_front 차례 -> 역할 선택 -> RESCUE 면 바로 할당 (한 대마다 차례 재계산) ----
+        rescue_on, explore_on = (self.modes[k] != "rule" for k in ("rescue", "explore"))   # rule = 네트워크 호출 안 함
+        # ---- [1] role_front 차례 -> 역할 선택 -> RESCUE 면 바로 할당 (한 대마다 차례 재계산). role 이 rule 이면 (이때 rescue / explore 도
+        #      rule) 결정은 전부 env 의 규칙 정책이므로 네트워크를 부르지 않는다 ----
         valid = s_valid & res_mask0
         sig = role_sigma(ids, rsl, valid, group, needed)
-        rem = needed.clone()
+        rem = needed.clone() if self.modes["role"] != "rule" else torch.zeros_like(needed)
         for it in range(N):
             if not bool(rem.any()):
                 break
@@ -390,11 +402,12 @@ class RoleNet(nn.Module):
             ret = ra == ROLE_RETURN
             goal = scatter(goal, bi[ret], ii[ret], ob["depot_pos"][bi[ret]])        # RETURN 목표 = depot
             on = ra == ROLE_RESCUE
-            if bool(on.any()):                                              # task 네트워크 (r = RESCUE, 역할 반영 후 따로 계산)
+            if rescue_on and bool(on.any()):                                # rescue 네트워크 (역할 반영 후 따로 계산)
                 b2, i2 = bi[on], ii[on]
-                gr2 = build(b2, i2, ROLE_RESCUE)
-                al_raw, h2 = run(self.task_net, gr2)
-                al = _masked(al_raw, torch.cat([res_mask[b2, i2], no_f[b2, i2]], -1).float())   # F 전부 차단
+                gr2 = build(b2, i2)
+                al_raw, h2 = run(self.rescue_net, gr2)
+                al = _masked(torch.cat([al_raw, al_raw.new_zeros(al_raw.shape[0], K)], -1),
+                             torch.cat([res_mask[b2, i2], no_f[b2, i2]], -1).float())     # F 칸은 전부 차단
                 rs = choose(al, "task", b2, i2)
                 trace("rescue", sel, gr2, h2, al)
                 task_logits = scatter(task_logits, b2, i2, al)
@@ -409,7 +422,7 @@ class RoleNet(nn.Module):
             rem = rem & ~sel
 
         # ---- [2] explore 1 단계: EXPLORE 를 고른 재결정 UAV 전원 explore_front 차례 (실제 선택으로 n_k 갱신, 한 대마다 재계산) ----
-        rem = needed & (role_act == ROLE_EXPLORE)
+        rem = needed & (role_act == ROLE_EXPLORE) & explore_on
         n_now = torch.round(ob["k_n"] * N)
         for it in range(N):
             if not bool(rem.any()):
@@ -418,9 +431,10 @@ class RoleNet(nn.Module):
                                    float(self.cfg["order_dist_alpha"]), ob["geo"][:, 2])
             bi, ii = sel.nonzero(as_tuple=True)
             rank["s1"] = torch.where(sel, torch.full_like(rank["s1"], it + 1), rank["s1"])
-            gr = build(bi, ii, ROLE_EXPLORE)
-            al_raw, h = run(self.task_net, gr)
-            al = _masked(al_raw, torch.cat([no_s[bi, ii], exp_mask[bi, ii]], -1).float())   # S 전부 차단
+            gr = build(bi, ii)
+            al_raw, h = run(self.explore_net, gr)
+            al = _masked(torch.cat([al_raw.new_zeros(al_raw.shape[0], T), al_raw], -1),
+                         torch.cat([no_s[bi, ii], exp_mask[bi, ii]], -1).float())   # S 칸은 전부 차단
             a = choose(al, "task", bi, ii)
             trace("s1", sel, gr, h, al)
             ex = (a - T).clamp(0, K - 1)
@@ -436,22 +450,18 @@ class RoleNet(nn.Module):
         if taken is not None:
             role_act, task_act = taken["role"].long(), taken["task"].long()
 
-        # ---- critics ----
-        gat = lambda x, a: torch.gather(x, 2, a[..., None]).squeeze(-1)
-        ra_ = torch.where(task_act < T, task_act, torch.zeros_like(task_act)).clamp(0, T - 1)
-        ea_ = torch.where(task_act >= T, task_act - T, cur.clamp(min=0)).clamp(0, K - 1)
-        res_feat = torch.cat([torch.gather(ob["s_pos"], 2, ra_[..., None, None].expand(B, N, 1, 2)).squeeze(2) - pos,
-                              torch.stack([gat(ob["s_tau"], ra_), gat(ob["s_held"], ra_), gat(rd, ra_), gat(rsl, ra_)], -1)], -1)
-        exp_feat = torch.cat([torch.gather(ob["k_pos"], 2, ea_[..., None, None].expand(B, N, 1, 2)).squeeze(2) - pos,
-                              torch.stack([gat(ob["k_size"], ea_), gat(ob["k_n"], ea_), gat(ed, ea_)], -1)], -1)
+        # ---- critics (네트워크마다 따로, rule 인 네트워크는 0) ----
         team_act = torch.cat([Fn.one_hot(role_act.clamp(0, N_ROLES - 1), N_ROLES).float(), goal], dim=-1).detach()
         ckw = dict(self_feats=ob["role_self"][..., :3], tasks=ob["critic_tasks"], task_present=ob["critic_task_present"],
                    team=ob["critic_team"], team_act=team_act, glob=ob["critic_global"])
-        va = self.critic_task(ob["state"], ob["local"], torch.cat([role_ctx, res_feat, exp_feat], -1), **ckw)
+        g_task = ob["critic_task_global"][:, None, :].expand(B, N, -1)         # 전역 g_t (rescue / explore critic 전용, actor 미사용)
+        task_ctx = torch.cat([role_ctx, g_task], -1)
+        zero = torch.zeros(B, N, device=dev)
         raw = {"role": self.critic_role(ob["state"], ob["local"], role_ctx, **ckw),
-               "rescue": va[..., 0], "explore": va[..., 1]}
+               "rescue": self.critic_rescue(ob["state"], ob["local"], task_ctx, **ckw) if rescue_on else zero,
+               "explore": self.critic_explore(ob["state"], ob["local"], task_ctx, **ckw) if explore_on else zero}
         vn = self.value_norms()
-        values = {h: (vn[h].denormalize(v) if vn[h] is not None else v) for h, v in raw.items()}
+        values = {h: (vn[h].denormalize(v) if vn[h] is not None and not (v is zero) else v) for h, v in raw.items()}
         return {"logits": {"role": role_logits, "task": task_logits},
                 "actions": {"role": role_act, "task": task_act},
                 "stage": {"s1": s1, "rescue": resc, "rank": rank},

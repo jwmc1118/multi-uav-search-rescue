@@ -1,4 +1,4 @@
-"""Role 재결정 트리거 점검 (주기 재결정, 이벤트 "1" 생존자 증가, 목표 유효, 같은 목표 옵션 이어가기) — ray 불필요.
+"""Role 재결정 트리거 점검 (주기 재결정, 이벤트 "1" 생존자 증가, 목표 유효, 같은 목표 재선택) — ray 불필요.
 
     python -m tests.role.test_triggers
 
@@ -8,9 +8,7 @@
      이미 맡음 -> 없음
  [3] goal_valid: periodic · "1" 재결정 UAV 는 유지, "2" / "3" / "4" 는 꺼짐
  [4] RESCUE 재결정: 자기 현재 목표는 마스크되지 않음, 재결정하지 않는 UAV 가 맡은 생존자는 막힘
- [5] 같은 생존자 재선택: rescue_valid 0, 옵션 (F / d / c̄ 누적) 이어짐, 보너스는 옵션 끝에 1 회. 다른 생존자로 바꾸면 그 결정 step 에
-     reward_rescue_close 로 정산 (구조 완료가 아니므로 보너스 0). compute_role_gae: 이어진 옵션은 표본 하나, close 값은 앞 옵션의
-     마지막 step 에 더해짐
+ [5] 같은 생존자 재선택: rescue_valid 0 (표본 아님), 목표 전환 아님. 유효한 목표를 두고 다른 생존자로 바꾸면 새 표본 + 자발적 목표 전환
  [6] 용량 0 UAV 가 주기 재결정에서 EXPLORE 선택 가능 (역할 마스크 RETURN · EXPLORE), cap0_explore_choice 기록
  [7] 규칙 정책: periodic / "1" 은 그룹 그리디 (담당 후보 생존자), "2" / "3" / "4" 는 한 대 EDF
 """
@@ -127,7 +125,6 @@ def check_own_target_not_masked():
     tick(sim)
     sim._assign_rescue(0, a)
     sim._assign_rescue(2, b)
-    sim._rescue_event_reward(sim.comp[0], [0, 2])                # 두 옵션 열림
     tick(sim)
     sim.events = [{"periodic"}, {"periodic"}, set()]             # R0 (a 를 맡음) · R1 재결정, R2 (b 를 맡음) 는 아님
     sim._set_decide_order()
@@ -142,9 +139,6 @@ def check_own_target_not_masked():
 
 
 def check_same_target_option():
-    from types import SimpleNamespace
-    from tests.role.test_rewards import gae_batch
-    from training.role.ppo import PMASK, VT, compute_role_gae
     sim = fresh(1)
     sim.time = 0
     place(sim, [(15, 10)])
@@ -155,39 +149,24 @@ def check_same_target_option():
     sim.events = [{"periodic"}]
     sim._set_decide_order()
     sv = Recorder(sim, role={0: R}, rescue={0: sim.victim_slots[0].index(a)}).run()
-    sim._rescue_event_reward(sim.comp[0], [0])
-    opt = sim._res_opt[0]
-    assert sv["rescue"][0] and opt is not None
-    sim.role_rewards([], [])                                     # 1 step (c̄ 누적)
+    assert sv["rescue"][0]
+    sim.role_rewards([], [])
     sim.time = 10
     tick(sim)
     sim.events = [{"periodic"}]
     sim._set_decide_order()
     sv = Recorder(sim, role={0: R}, rescue={0: sim.victim_slots[0].index(a)}).run()
-    assert not sv["rescue"][0] and sim._res_opt[0] is opt and opt["n"] == 1, "같은 생존자 -> 옵션 계속"
+    assert not sv["rescue"][0] and sim._ts_pending == [0.0], "같은 생존자 -> 표본 아님, 목표 전환 아님"
     assert sim.ev_stats["rescue_keep"] == 1 and sim.ev_stats["rescue_redecide"] == 1
-    r = sim.role_rewards([], [])
-    assert r["rescue_close"] == [0.0] and opt["n"] == 2
+    sim.role_rewards([], [])
     sim.time = 20
     tick(sim)
     sim.events = [{"periodic"}]
     sim._set_decide_order()
-    sv = Recorder(sim, role={0: R}, rescue={0: sim.victim_slots[0].index(b)}).run()   # 다른 생존자 -> 옵션 끝
-    assert sv["rescue"][0] and sim._res_opt[0] is not opt
-    r = sim.role_rewards([], [])
-    close = r["rescue_close"][0]
-    assert close == 0.0 and len(sim.rw_stats["omega_bar"]) == 1, "결정으로 끝난 옵션 = 구조 완료 아님 -> 보너스 0 (옵션당 1 회 정산)"
-    # compute_role_gae: 결정 t0 = 0, 같은 생존자 재결정 t 3 (role_valid 1, rescue_valid 0), 다른 생존자 t 6 (close 보너스)
-    col = lambda v: [[x] for x in v]
-    rows = {"rescue_valid": col([1, 0, 0, 0, 0, 0, 1, 0]), "rescue_train": col([1, 0, 0, 0, 0, 0, 1, 0]),
-            "role_valid": col([1, 0, 0, 1, 0, 0, 1, 0]), "rescue_active": col([1] * 8),
-            "reward_rescue": col([0.4, 0, 0, 0, 0, 0, 0.3, 0]), "reward_rescue_close": col([0, 0, 0, 0, 0, 0, 0.9, 0])}
-    pol = SimpleNamespace(model=SimpleNamespace(n_agents=1), config={"gamma": 0.99, "lambda": 0.95, "env_config": {}})
-    bt = compute_role_gae(pol, gae_batch(rows))
-    R0, n_opt = float(bt[VT["rescue"]][0, 0]), int(bt[PMASK["rescue"]].sum())
-    assert abs(R0 - (0.4 + 0.9)) < 1e-6 and n_opt == 1, (R0, n_opt)              # 옵션 [0, 6) 하나 + close 보너스
-    print(f"[5] same survivor re-chosen: rescue_valid 0, option continues (n {opt['n']}), keep 1/1; switching survivor closes it "
-          f"(close bonus {close:.3f}: not a rescue completion); GAE: one option R = 0.4 + close 0.9 = {R0:.2f}")
+    sv = Recorder(sim, role={0: R}, rescue={0: sim.victim_slots[0].index(b)}).run()   # 유효한 a 를 두고 다른 생존자
+    assert sv["rescue"][0] and sim._ts_pending == [1.0]
+    print("[5] same survivor re-chosen: rescue_valid 0 (keep 1/1), no target switch; switching to another survivor while "
+          "a is still valid -> new sample + voluntary target switch")
 
 
 def check_cap0_explore():
