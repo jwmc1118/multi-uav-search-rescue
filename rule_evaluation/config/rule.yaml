@@ -41,12 +41,48 @@ metrics:                        # seed 별 지표 (eval_common/episode.py run_ep
   - wasted_trips_per_dec
   - wasted_steps_per_dec
   - conflict_reward_per_dec
+  # 그 밖의 에피소드 지표
+  - explored                    # 탐색한 free 셀 비율
+  - rescue_time_mean            # 구조 시각 평균
+  - golden_slack_mean           # (마감 - 구조 시각) / 골든타임 평균 (구조된 조난자)
+  - rescued_per_uav             # UAV 당 구조 수
+  - same_cell                   # 같은 칸 겹침 수
+  - conflict_cross              # 그룹 간 충돌 수
+  - escalations
+  # 슬롯 잘림 (eval_common/episode.py slot_snapshot — S = 역할 결정, K = explore 1 단계 결정 기준)
+  - trunc_decisions_S           # 할당 가능 후보 수 > s_max 인 결정 수
+  - trunc_frac_S                # 그 결정 비율
+  - dropped_S                   # 잘린 할당 가능 후보 수 합 (= dropped_reachable_S: 후보 조건이 골든타임 안 도달)
+  - dropped_S_per_dec           # 결정당 잘린 후보 수
+  - dropped_urgent_S            # 잘린 후보 중 남은 후보의 최소 slack 보다 급한 후보 수 합
+  - best_dropped_S              # EDF 로 고를 생존자가 잘린 쪽에 있던 결정 수
+  - trunc_decisions_K           # 덩어리 수 > k_max 인 1 단계 결정 수
+  - trunc_frac_K
+  - dropped_K                   # 잘린 덩어리 수 합
+  - dropped_K_cells             # 잘린 덩어리 frontier 셀 수 합
+  - s_nodes_overflow            # 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (S 노드 넘침)
+  # 상한 · 통신 · 만료 원인 (eval_common/episode.py run_episode_detailed)
+  - ub_loose                    # 이론적 상한: depot 에서 골든타임 안에 도달 가능한 조난자 비율 (정책과 무관, 참고)
+  - ub_greedy                   # 전지적 EDF 스케줄 구조 비율 (정책과 무관, 참고)
+  - rescue_over_ub              # 구조율 / ub_loose
+  - group_size_mean             # 통신 그룹 평균 크기 (step 평균, 참고)
+  - n_groups_mean               # 통신 그룹 수 (step 평균, 참고)
+  - isolated_frac               # 혼자인 UAV 비율 (step 평균)
+  - expire_undiscovered_rate    # 만료 원인 (N_T 대비): 미발견 상태로 만료
+  - expire_unassigned_rate      #   발견했지만 아무도 맡지 않은 채 만료
+  - expire_assigned_rate        #   RESCUE UAV 가 맡고 있던 중 만료
+  - infer_ms_per_decision       # 모델 결정 1 회당 추론 시간 (ms, CPU · 워커당 스레드 1 — 규칙 정책은 --, 참고)
 lower_is_better: [expire_rate, episode_len, discover_to_rescue_mean, undiscovered,
                   conflict_concurrent, conflict_concurrent_same_group, conflict_concurrent_cross_group, wasted_trips,
                   wasted_steps, conflict_reward, conflict_concurrent_per_dec, conflict_concurrent_same_group_per_dec,
-                  conflict_concurrent_cross_group_per_dec, wasted_trips_per_dec, wasted_steps_per_dec, conflict_reward_per_dec]
+                  conflict_concurrent_cross_group_per_dec, wasted_trips_per_dec, wasted_steps_per_dec, conflict_reward_per_dec,
+                  rescue_time_mean, same_cell, conflict_cross, escalations,
+                  trunc_decisions_S, trunc_frac_S, dropped_S, dropped_S_per_dec, dropped_urgent_S, best_dropped_S,
+                  trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells, s_nodes_overflow, isolated_frac,
+                  expire_undiscovered_rate, expire_unassigned_rate, expire_assigned_rate]
                   # 작을수록 좋음 (W/T/L 의 W = 더 적음). 나머지는 클수록 좋음
-reference_metrics: [rescue_decisions]   # 요약만 (좋고 나쁨 방향이 없어 짝 비교 · W/T/L 에서 뺌)
+reference_metrics: [rescue_decisions, ub_loose, ub_greedy, group_size_mean, n_groups_mean, infer_ms_per_decision]
+                  # 요약만 (좋고 나쁨 방향이 없거나 정책과 무관 · 규칙 정책 값 없음 — 짝 비교 · W/T/L 에서 뺌)
 
 bootstrap:
   n: 10000                      # 평균 · 짝 차이 95% CI bootstrap 횟수

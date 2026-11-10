@@ -1,4 +1,4 @@
-"""모델 경로 하나로 구성요소별 모드 + 가중치를 정하는 공통 로더 — 학습 (구성요소 path 로드) · GUI · main_rule · main_scale 이
+"""모델 경로 하나로 구성요소별 모드 + 가중치를 정하는 공통 로더 — 학습 (구성요소 path 로드) · GUI · main_rule 이
 모두 이 함수로 모델을 읽는다.
 
 구성요소 role / rescue / explore, 모드:

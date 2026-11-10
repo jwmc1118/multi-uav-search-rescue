@@ -11,7 +11,7 @@ ray 가 없거나 복원 실패 시 예외를 던지므로 호출부에서 잡�
                        구조를 정하는 값 (structure_diff) 이 체크포인트와 다르면 어떤 키가 다른지 에러. 입력 정규화 분모
                        (NORM_KEYS) 가 다르면 경고만 (self.warnings).
     env_priority=False (evaluation 스크립트): 호출자 env_config (평가 yaml) 를 그대로 쓰되 SHAPE_KEYS 만 체크포인트 값
-                       (env_config 가 None 이면 체크포인트 env_config).
+                       (free_keys 제외 — main_rule 은 FREE_KEYS, env_config 가 None 이면 체크포인트 env_config).
 
 학습 때와 다른 UAV 수 (N) 로 실행:
     모델 파라미터는 N 과 무관하다 (모든 텐서 shape 가 N 독립 — 에이전트 축은 per-agent 공유 모듈 / attention / pooling).
@@ -28,6 +28,8 @@ import numpy as np
 
 # 관측 / 모델 shape (또는 관측 정규화 분모) 를 정하는 env 설정 — 실행 시에도 체크포인트 값을 따라야 한다
 SHAPE_KEYS = ("max_targets", "s_max", "state_size", "local_channels", "global_downsample", "rows", "cols", "max_episode_len")
+# 모델 파라미터와 무관한 크기 키 — 평가에서는 체크포인트 값으로 고정하지 않고 평가 yaml 값을 쓴다
+FREE_KEYS = ("rows", "cols", "max_targets", "max_episode_len")
 # 입력 정규화 분모 — 달라도 실행은 되지만 학습 때와 입력 스케일이 달라진다 (env_priority 에서 경고)
 NORM_KEYS = ("max_episode_len", "d_max", "rows", "cols", "explore.size_ref")
 MODES = ("greedy", "sample")
@@ -40,8 +42,8 @@ def is_role_config(train_cfg):
 
 def runtime_env_config(train_env, caller_env=None, free_keys=()):
     """실행용 env_config = 호출자 env_config (평가 yaml 등) 그대로, SHAPE_KEYS (+ cluster.k_max) 만 체크포인트 값으로 고정.
-    호출자 값이 없으면 (None) 체크포인트 env_config. free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (scale 평가: rows / cols /
-    max_targets / max_episode_len — 모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
+    호출자 값이 없으면 (None) 체크포인트 env_config. free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (main_rule: FREE_KEYS =
+    rows / cols / max_targets / max_episode_len — 모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
     cfg = dict(train_env if caller_env is None else caller_env)
     warnings = []
     for k in SHAPE_KEYS:

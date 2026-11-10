@@ -7,7 +7,7 @@
     fig_compare_cumulative  에피소드 진행률 (%) 에 따른 누적 발견율 (실선) · 구조율 (점선), 정책별 색, seed 평균 + 95% CI 음영
     fig_compare_roles    정책별 패널: 진행률에 따른 EXPLORE / RESCUE / RETURN 비율 (seed 평균, stacked area)
     (진행률 = step / 그 에피소드 길이, 10 % 구간 — rule_evaluation/compare.py progress_bins · progress_stats)
-    fig_compare_conflict    할당 충돌: (a) 에피소드당 동시 추격 (다른 그룹 + 같은 그룹 빗금 누적, 합계 CI) (b) 헛걸음 (c) 낭비 step
+    fig_compare_conflict    할당 충돌: (a) 에피소드당 동시 추격 (b) 헛걸음 (c) 낭비 step
                          (d) 구조 결정당 동시 추격 — 평균 + 95% CI
     fig_compare_conflict_time   진행률 10 % 구간별 동시 추격 수, 정책별 선 + CI 음영
     (fig_compare_bar 는 BAR_METRICS 만 — 충돌 지표는 위 두 그림)
@@ -224,41 +224,25 @@ def table_conflict(summary, pw, labels, pairs, lower_is_better, path, n):
 
 
 def fig_compare_conflict(summary, labels, out, width="double", dpi=300):
-    """(a) 동시 추격 (같은 그룹 빗금 / 다른 그룹 누적) + 합계 CI, (b) 헛걸음, (c) 낭비 step, (d) 구조 결정당 동시 추격."""
+    """(a) 동시 추격, (b) 헛걸음, (c) 낭비 step, (d) 구조 결정당 동시 추격 — 에피소드당 평균 + CI."""
     sty = ps.policy_styles(labels)
     fig, axes = ps.figure(width, 2.1, ncols=4)
     data = []
     g = lambda lab, m: _rows(summary, policy=lab, metric=m)[0]
-    ax = axes[0]
-    for k, lab in enumerate(labels):
-        same, cross, tot = g(lab, "conflict_concurrent_same_group"), g(lab, "conflict_concurrent_cross_group"), \
-            g(lab, "conflict_concurrent")
-        c = sty[lab]["color"]
-        ax.bar([k], [cross["mean"]], width=0.7, color=c, alpha=0.85)
-        ax.bar([k], [same["mean"]], width=0.7, bottom=[cross["mean"]], color="white", edgecolor=c, hatch="////", lw=0.6)
-        ax.errorbar([k], [tot["mean"]], yerr=[[tot["mean"] - tot["ci_lo"]], [tot["ci_hi"] - tot["mean"]]], fmt="none",
-                    color="black", elinewidth=0.8, capsize=2)
-        data += [{"panel": "a", "metric": r["metric"], "policy": lab, "mean": r["mean"], "ci_lo": r["ci_lo"],
-                  "ci_hi": r["ci_hi"]} for r in (same, cross, tot)]
-    from matplotlib.patches import Patch
-    ax.legend(handles=[Patch(facecolor="0.5", label="cross-group"),
-                       Patch(facecolor="white", edgecolor="0.4", hatch="////", label="same group")], loc="upper left",
-              fontsize=6)
-    ax.set_ylabel("Concurrent chases / episode")
-    for ax, m, ylab in zip(axes[1:], ("wasted_trips", "wasted_steps", "conflict_concurrent_per_dec"),
-                           ("Wasted trips / episode", "Wasted steps / episode", "Concurrent chases / rescue decision")):
+    for p, ax, m, ylab in zip("abcd", axes, ("conflict_concurrent", "wasted_trips", "wasted_steps", "conflict_concurrent_per_dec"),
+                              ("Concurrent chases / episode", "Wasted trips / episode", "Wasted steps / episode",
+                               "Concurrent chases / rescue decision")):
         for k, lab in enumerate(labels):
             r = g(lab, m)
             ax.bar([k], [r["mean"]], width=0.7, color=sty[lab]["color"], alpha=0.85, label=lab,
                    yerr=[[r["mean"] - r["ci_lo"]], [r["ci_hi"] - r["mean"]]], error_kw={"elinewidth": 0.8, "capsize": 2})
-            data.append({"panel": "bcd"[list(axes[1:]).index(ax)], "metric": m, "policy": lab, "mean": r["mean"],
-                         "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"]})
+            data.append({"panel": p, "metric": m, "policy": lab, "mean": r["mean"], "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"]})
         ax.set_ylabel(ylab)
     for k, ax in enumerate(axes):
         ax.set_xticks([])
         ax.grid(axis="x", visible=False)
         ax.set_title(f"({'abcd'[k]})", fontsize=7.5, loc="left")
-    fig.legend(*axes[1].get_legend_handles_labels(), loc="outside upper center", ncol=len(labels))
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside upper center", ncol=len(labels))
     return ps.save(fig, os.path.join(out, "fig_compare_conflict"), data, dpi)
 
 

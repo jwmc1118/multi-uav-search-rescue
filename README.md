@@ -20,7 +20,6 @@ pip / setuptools / wheel 을 먼저 낮추고, torch 는 CPU / CUDA 빌드를 �
 ```
 main_gui.py           GUI (pygame) — Model 창에서 규칙 정책 / 저장 모델 / 학습 중 체크포인트 선택 (설정 gui_evaluation/config/*_gui.yaml)
 main_rule.py          여러 정책 (기본 rule_rule_rule · learn_rule_rule · learn_learn_learn) 같은 seed 비교 + 쌍별 짝 비교 -> results/rule_evaluation/
-main_scale.py         UAV 수 N 을 바꾸며 규칙 vs 학습 (확장성) -> results/scale_evaluation/
 env/core/             공통 세계: 맵 생성 · 조난자 · 센싱 · n-hop 지도 병합 · belief · BFS · critic 관측
 env/role/             RoleSimulation (역할 마스크 · 재결정 이벤트 · 결정 순서 · 보상 · 관측), explore (덩어리 · 구간),
                       clusters (DBSCAN · k-medoids), graph_obs (그래프 사양), gym_env (RoleEnv)
@@ -32,7 +31,6 @@ training/             train.py (엔트리포인트), config/ (env / role / task.
 eval_common/          model_loader (모델 경로 -> 구성요소 · 가중치) · light_policy (ray 없이 추론) · checkpoint_policy ·
                       parallel (seed 병렬) · episode (지표) · stats · paper_style · io
 rule_evaluation/      main_rule 설정 · 비교 · 그림, run_rules (규칙 정책 기준선), upper_bound, slot_analysis
-scale_evaluation/     main_scale 설정 · N 별 크기 조정 · 비교 · 그림
 gui/, gui_evaluation/ pygame 화면 · 스타일 / GUI 설정 · 임무 할당 분석 그래프
 tests/                점검 스크립트 (python -m tests.role.<name>)
 maps/                 맵 JSON
@@ -90,9 +88,12 @@ python main_rule.py                                                  # rule.yaml
 python main_rule.py --policies rule marl_models/best_model/learn_learn_rule/model_v01 \
                     --labels rule_rule_rule learn_learn_rule             # 정책 목록 바꾸기 (label 생략 = 조합 이름)
 python main_rule.py --pairs "learn_learn_learn:rule_rule_rule,learn_learn_learn:learn_rule_rule" --seeds 0-9 --tag quick
-python main_scale.py --checkpoint <모델> [--n 2,3,4,5,6,8,10] [--preset default|fixed]
 python -m rule_evaluation.run_rules                                                                  # 규칙 정책 200 seed
 ```
+
+스케일 비교 (맵 크기 · UAV 수 · 조난자 수) 는 `rule_evaluation/config/env_rule.yaml` 의 rows · cols · num_targets · max_targets ·
+UAV 수 (agents 목록) · target_golden_time 을 바꿔서 main_rule 로 실행한다 (조건마다 `--tag` 를 다르게, max_targets ≥ num_targets 상한 —
+작으면 시작할 때 에러). 실제 실행 env 는 시작할 때 콘솔과 meta.json `run_env` 에 출력된다.
 
 ## 점검
 
@@ -145,23 +146,19 @@ results/
 │   ├── figures/fig_compare_*.pdf|png|csv         ← bar (지표 + CI), paired (구조율 · 길이 seed 차이), seed (seed 별 구조율),
 │   │                                               cumulative (진행률별 누적 발견 · 구조), roles (정책별 역할 비율),
 │   │                                               conflict (동시 추격 · 헛걸음 · 낭비 step), conflict_time (진행률별 동시 추격)
-│   └── config.yaml / command.txt / meta.json     ← 실제 설정 사본, 실행 명령, 정책 정보 · 실제 env · git commit
-├── scale_evaluation/<YYYYMMDD_HHMMSS>_<tag>_<preset>/   ← main_scale.py
-│   ├── scale.csv / per_episode.csv / inference.csv / scale_table.tex
-│   ├── figures/fig_*.pdf|png|csv                 ← N 별 비율, 짝 차이, UAV 당 구조 수, 추론 시간
-│   └── meta.json                                 ← N 별 실제 env_config · 체크포인트 · git commit
+│   └── config.yaml / command.txt / meta.json     ← 실제 설정 사본, 실행 명령, 정책 정보 · 실제 env (run_env 요약) · git commit
 └── gui_evaluation/                               ← GUI G 키 임무 할당 그래프
 ```
 
-- 평가 환경 설정: 각 평가 폴더의 env yaml 을 env → role → task 순으로 합친 값 — main_rule = `rule_evaluation/config/{env,role,task}_rule.yaml`
-  (모든 정책에 같은 env, 구성요소 모드만 정책마다), main_scale = `scale_evaluation/config/{env,role,task}_scale.yaml` 위에 N 별 크기 조정
-  (`--preset` / `--n`). 실행 설정 (seed · mode · workers · bootstrap · 그림) 은 `rule.yaml` / `scale.yaml`. 평가 env yaml 은 training/config 와
+- 평가 환경 설정: `rule_evaluation/config/{env,role,task}_rule.yaml` 을 env → role → task 순으로 합친 값 (모든 정책에 같은 env,
+  구성요소 모드만 정책마다). 실행 설정 (seed · mode · workers · bootstrap · 그림) 은 `rule.yaml`. 평가 env yaml 은 training/config 와
   같은 값으로 유지 (`tests/role/test_config.py`, 다르게 둘 키는 그 파일의 `ALLOWED` 에 추가). 조건을 바꾸려면 평가 env yaml 을 고친다.
-  체크포인트는 가중치와 관측 shape 를 정하는 키 (SHAPE_KEYS + cluster.k_max) 에만 쓰고, 평가 env 와 다르면 체크포인트 값으로 고정해
-  meta.json `forced_checkpoint_keys` 에 남긴다 (main_scale 은 rows / cols / max_targets / max_episode_len 만 풀어 줌).
-- 같은 seed (main_scale 은 같은 (seed, N)) 에서 모든 정책의 초기 상태 (맵 · depot · 조난자 · 골든타임 · UAV) 가 같은지 확인한다.
+  체크포인트는 가중치와 관측 shape 를 정하는 키에만 쓴다: s_max · state_size · local_channels · global_downsample · cluster.k_max 가
+  평가 env 와 다르면 체크포인트 값으로 고정해 meta.json `forced_checkpoint_keys` 에 남기고, 모델 파라미터와 무관한 크기 키
+  (FREE_KEYS = rows · cols · max_targets · max_episode_len, `eval_common/checkpoint_policy.py`) 는 평가 yaml 값을 그대로 쓴다.
+- 같은 seed 에서 모든 정책의 초기 상태 (맵 · depot · 조난자 · 골든타임 · UAV) 가 같은지 확인한다.
 
-결과 열 (main_rule per_seed.csv · main_scale per_episode.csv = 에피소드 하나, main_scale scale.csv = 지표마다 정책별 평균 · 표준편차 · CI + 짝 비교):
+결과 열 (per_seed.csv = 에피소드 하나):
 
 | 열 | 뜻 |
 |---|---|
@@ -180,9 +177,6 @@ results/
 | ub_loose / ub_greedy / rescue_over_ub | depot 에서 골든타임 안 도달 가능 비율, 전지적 EDF 스케줄 구조율, 구조율 / ub_loose |
 | group_size_mean / n_groups_mean / isolated_frac | 통신 그룹 평균 크기 · 수, 혼자인 UAV 비율 (step 평균) |
 | expire_undiscovered / unassigned / assigned_rate | 만료 원인: 미발견 / 발견했지만 미배정 / 맡고 있던 중 (N_T 대비) |
-| diff_mean, diff_ci_lo/hi, learned_win / tie / learned_loss | (main_scale) 짝 차이 (학습 - 기준선) 평균 · 95% bootstrap CI, 학습 모델 기준 승 / 무 / 패 비율 |
-| d_z, d_z_ci_lo/hi | 효과 크기 Cohen's d_z = 평균 / 표준편차 (짝 차이) · bootstrap CI |
-| p_wilcoxon, p_min, n_nonzero, p_note, unanimous | Wilcoxon p, 도달 가능한 최소 p (= 2 / 2^n_nonzero), n < 6 표시, 모든 짝이 한쪽 우세 ("learned" / "baseline") |
 | (main_rule pairwise.csv) pair, mean, ci_lo/hi, win / tie / loss, p_wilcoxon, p_holm, d_z | 쌍 A - B 의 seed 차이 평균 · CI, A 기준 승 / 무 / 패 seed 수, Wilcoxon p (차이 전부 0 이면 1), 같은 지표 안 Holm 보정 p, Cohen's d_z (표준편차 0 이면 빈칸) |
 
 ## 설치 상세 (새 컴퓨터, Windows + Anaconda 기준)

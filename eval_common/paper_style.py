@@ -1,10 +1,10 @@
-"""논문용 그림 스타일 (IEEE) — rule / scale 평가 그림이 같이 쓴다.
+"""논문용 그림 스타일 (IEEE) — main_rule 평가 그림 (rule_evaluation/plots.py).
 
     apply_style()                 serif (Times 계열 -> Nimbus Roman -> STIX), mathtext stix, 축 라벨 8.5 pt, 눈금 7.5 pt,
                                   위 · 오른쪽 테두리 없음, 얇은 격자
     figure(width="single"|"double", height)   단단 3.5 in / 양단 7.16 in
-    POLICY_STYLE                  main_scale 정책 색 (Okabe–Ito 기반, 규칙 = 회색, 모델 = 파랑) + 마커 — 흑백 인쇄에서도 구분
-    policy_styles(labels)         main_rule 정책 label 별 고정 색 · 마커 (COMBO_STYLE 의 조합 이름은 항상 같은 색, 그 밖은 남은 색 순서)
+    policy_styles(labels)         정책 label 별 고정 색 · 마커 (Okabe–Ito 기반, 흑백 인쇄에서도 구분 — COMBO_STYLE 의 조합 이름은
+                                  항상 같은 색, 그 밖은 남은 색 순서)
     LABEL, fmt(x, digits)         지표 표시 이름, 표 숫자 형식 (nan -> --)
     save(fig, path_no_ext, data_rows)   PDF (벡터) + PNG (300 dpi) + 원자료 CSV (같은 이름)
 그림 안에는 제목을 넣지 않는다 (캡션은 논문에서).
@@ -21,10 +21,6 @@ from eval_common.io import write_csv  # noqa: E402
 WIDTH = {"single": 3.5, "double": 7.16}
 OKABE_ITO = {"black": "#000000", "orange": "#E69F00", "skyblue": "#56B4E9", "green": "#009E73",
              "yellow": "#F0E442", "blue": "#0072B2", "vermillion": "#D55E00", "purple": "#CC79A7", "gray": "#7F7F7F"}
-POLICY_STYLE = {
-    "baseline": {"color": OKABE_ITO["gray"], "marker": "s", "linestyle": "--", "label": "Rule (greedy)"},
-    "learned": {"color": OKABE_ITO["blue"], "marker": "o", "linestyle": "-", "label": "Learned"},
-}
 COMBO_STYLE = {"rule_rule_rule": (OKABE_ITO["gray"], "s"), "learn_rule_rule": (OKABE_ITO["orange"], "^"),
                "learn_learn_rule": (OKABE_ITO["green"], "D"), "learn_learn_learn": (OKABE_ITO["blue"], "o")}
 _EXTRA = [(OKABE_ITO[k], m) for k, m in (("vermillion", "v"), ("purple", "P"), ("skyblue", "X"), ("black", "*"),

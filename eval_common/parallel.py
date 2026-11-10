@@ -1,13 +1,12 @@
-"""정책 평가의 seed 단위 병렬 실행 (main_rule / main_scale).
+"""정책 평가의 seed 단위 병렬 실행 (main_rule).
 
-    run_tasks(models, mode, tasks, workers)   models = {정책 슬롯 이름: 모델 경로 | None (= 규칙 정책)}
-        (main_rule = 정책 label, main_scale = "baseline" / "learned"),
+    run_tasks(models, mode, tasks, workers)   models = {정책 슬롯 이름 (main_rule = 정책 label): 모델 경로 | None (= 규칙 정책)},
         tasks = [Task(key, env_config, free_keys, seed, timeseries, policies)]
-        -> [Result(key, seed, per [정책별 행], ts, env_used, sig)] (key, seed 순 정렬). policies 기본 (baseline, learned)
+        -> [Result(key, seed, per [정책별 행], ts, env_used, sig)] (key, seed 순 정렬)
 
 워커 (multiprocessing spawn) 는 시작할 때 CUDA_VISIBLE_DEVICES="" · torch.set_num_threads(1) 로 맞추고 모델마다 가중치를 한 번만
 읽는다 (eval_common/light_policy.py — eval_common/model_loader.py 로 구성요소 모드 자동 구성, ray.init / trainer 없음).
-받은 task 마다 그 env_config 로 모델을 준비하고 (같은 관측 shape 면 재사용 — main_scale 은 한 워커가 여러 N 을 처리)
+받은 task 마다 그 env_config 로 모델을 준비하고 (같은 관측 shape 면 재사용 — task 마다 env 가 달라도 됨)
 policies 순서대로 같은 seed 를 실행해 초기 상태 지문이 같은지 확인한다. 정책마다 그 구성요소 모드 (rule 인 구성요소는 규칙
 정책) 로 실행하고, 두 모델의 실행 env (구성요소 모드 제외) 는 같아야 한다. 결과는 seed 순으로 정렬하므로 workers 수와 무관하게
 같다 (추론 시간 열 제외). workers = 1 이면 같은 함수를 현재 프로세스에서 실행 (torch 스레드 1).
@@ -20,7 +19,7 @@ import sys
 import time
 from collections import namedtuple
 
-Task = namedtuple("Task", "key env_config free_keys seed timeseries policies", defaults=(("baseline", "learned"),))
+Task = namedtuple("Task", "key env_config free_keys seed timeseries policies")
 # policies: 실행할 정책 슬롯 (models 의 키, 각각 모델 경로 또는 None = 규칙 정책) — 순서대로 같은 seed 로 실행
 Result = namedtuple("Result", "key seed per ts env_used sig")     # sig = seed 의 초기 상태 지문 (task 끼리 비교용)
 
@@ -66,7 +65,7 @@ def _run(task):
     env = env if env is not None else _strip(dict(task.env_config))
     key = json.dumps(env, sort_keys=True, default=str)
     if key not in _W["sims"]:
-        _W["sims"] = {key: RoleSimulation(env)}                 # 최근 env 하나만 유지 (main_scale 의 큰 맵 메모리)
+        _W["sims"] = {key: RoleSimulation(env)}                 # 최근 env 하나만 유지 (큰 맵 메모리)
     sim = _W["sims"][key]
     per, ts, sig = [], [], None
     for name in task.policies:

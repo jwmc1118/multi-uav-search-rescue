@@ -5,7 +5,7 @@
 [1] GUI 사본 (gui_evaluation *_gui.yaml) 은 GUI 가 쓰는 최상위 키 (model, env_config, main) 만 두고, 학습용 yaml (env / role /
     task) 의 그 키들과 파일마다 key 집합이 같다 — 단 GUI 사본에만 main.* (화면 설정 · 시작 조합). 학습 전용 (PPO · 병렬 수집 ·
     eval · plot · 학습 모드) 은 GUI 사본에 없어야 한다.
-    평가 env (rule_evaluation *_rule.yaml, scale_evaluation *_scale.yaml) 는 시뮬레이션 env_config 만 두므로, 세 파일을 합친
+    평가 env (rule_evaluation *_rule.yaml) 는 시뮬레이션 env_config 만 두므로, 세 파일을 합친
     env_config 를 학습용 합친 env_config 에서 뺀 부분 (OMIT: gui.*) 을 제외하고 비교 — key 집합 · 값 같음 (보상 포함).
     값이 다른 key 를 출력하고, 허용 목록 (ALLOWED, 사본별 — 지금은 모두 GUI 관련: gui.*, depot) 밖의 값
     차이가 있으면 실패. 다르게 둘 키는 ALLOWED 에 추가
@@ -20,17 +20,17 @@ import os
 
 import yaml
 
-from training.config_loader import (CONFIG_DIR, GUI_CONFIG_DIR, GUI_FILES, RULE_CONFIG_DIR, RULE_FILES, SCALE_CONFIG_DIR,
-                                    SCALE_FILES, load_config, merge, reward_settings_line)
+from training.config_loader import (CONFIG_DIR, GUI_CONFIG_DIR, GUI_FILES, RULE_CONFIG_DIR, RULE_FILES, load_config, merge,
+                                    reward_settings_line)
 
 BASES = ("env", "role", "task")
-COPIES = {"_gui": GUI_CONFIG_DIR, "_rule": RULE_CONFIG_DIR, "_scale": SCALE_CONFIG_DIR}   # 학습용 yaml 의 사본 (접미사: 폴더)
-EVAL_FILES = {"_rule": RULE_FILES, "_scale": SCALE_FILES}       # 평가 env (env_config 만, 합쳐서 비교)
+COPIES = {"_gui": GUI_CONFIG_DIR, "_rule": RULE_CONFIG_DIR}   # 학습용 yaml 의 사본 (접미사: 폴더)
+EVAL_FILES = {"_rule": RULE_FILES}       # 평가 env (env_config 만, 합쳐서 비교)
 OMIT = ("gui.",)                                                 # 평가 env 에서 뺀 학습용 env_config key (GUI)
 GUI_KEYS = {"model", "env_config", "main"}                     # GUI 사본에 두는 최상위 key (나머지는 학습 전용)
 GUI_ONLY = ("main.",)                                           # GUI 사본에만 있는 key (main_gui.py 화면 설정)
 ALLOWED = {"_gui": ("env_config.gui.", "env_config.depot"),      # 사본별 값 차이 허용 key (접두사, GUI · 실행 관련)
-           "_rule": ("gui.", "depot"), "_scale": ("gui.", "depot")}       # — 다르게 둘 key 는 여기에 추가
+           "_rule": ("gui.", "depot")}       # — 다르게 둘 key 는 여기에 추가
 
 
 def leaves(d, p=()):
@@ -44,7 +44,7 @@ def leaves(d, p=()):
 
 
 def read(name):
-    """학습용 yaml 은 training/config/, 사본 (*_gui / *_rule / *_scale.yaml) 은 COPIES 의 폴더."""
+    """학습용 yaml 은 training/config/, 사본 (*_gui / *_rule.yaml) 은 COPIES 의 폴더."""
     d = next((v for k, v in COPIES.items() if name.endswith(f"{k}.yaml")), CONFIG_DIR)
     with open(os.path.join(d, name)) as f:
         return yaml.safe_load(f) or {}
@@ -115,7 +115,6 @@ def check_restored_values():
     assert sorted(f for f in os.listdir(GUI_CONFIG_DIR) if f.endswith(".yaml")) == \
         ["env_gui.yaml", "role_gui.yaml", "task_gui.yaml"]
     assert sorted(os.listdir(RULE_CONFIG_DIR)) == ["env_rule.yaml", "role_rule.yaml", "rule.yaml", "task_rule.yaml"]
-    assert sorted(os.listdir(SCALE_CONFIG_DIR)) == ["env_scale.yaml", "role_scale.yaml", "scale.yaml", "task_scale.yaml"]
     for files in (None, GUI_FILES):
         cfg = load_config(files) if files else load_config()
         e = cfg["env_config"]

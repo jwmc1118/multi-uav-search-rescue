@@ -1,4 +1,4 @@
-"""에피소드 실행 + 지표 계산 공용 함수 — main_rule / main_scale (eval_common/parallel.py) · slot_analysis 가 같이 쓴다.
+"""에피소드 실행 + 지표 계산 공용 함수 — main_rule (eval_common/parallel.py) · slot_analysis 가 같이 쓴다.
 
     run_episode_detailed(sim, policy, seed)   seed 로 맵 / 조난자 / 골든타임 / 시작 위치를 고정 생성하고 정책 샘플링도 같은
                                      seed 로 고정 (정책끼리 같은 상황에서 비교). 에피소드 끝 지표 · 시계열 · 초기 상태 지문.
@@ -39,7 +39,7 @@ def parse_seeds(text):
     return out
 
 
-# ---------------------------------------------------------------- 상세 실행 (main_rule / main_scale)
+# ---------------------------------------------------------------- 상세 실행 (main_rule)
 
 def init_signature(sim):
     """reset 직후 초기 상태 지문 — 맵 / depot / 조난자 (위치 · 골든타임 · 마감) / UAV (위치 · 용량 · 센서 · 통신).

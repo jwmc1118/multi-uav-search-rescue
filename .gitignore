@@ -42,5 +42,5 @@ tests/out/
 # 분석 그래프 (GUI 임무 할당 그래프 예전 위치)
 figures/
 
-# 평가 · 분석 결과 (main_rule / main_scale / upper_bound / GUI)
+# 평가 · 분석 결과 (main_rule / upper_bound / GUI)
 results/

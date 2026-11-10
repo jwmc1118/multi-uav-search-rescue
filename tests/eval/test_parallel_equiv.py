@@ -4,8 +4,7 @@
 
 [1] main_rule 경로 (rule_evaluation.compare.run_parallel, 규칙 정책 + 모델, (정책 × seed) 작업), seed 0-9: workers = 1 과
     workers = W 의 per_episode / timeseries 행이 완전히 같다 (추론 시간 infer_ms_per_decision 제외), 행 순서 = 정책 · seed 순
-[2] main_scale 경로 (scale_evaluation.compare.run_all), N = 2, 5 · seed 0-3: 같은 비교 (한 워커가 여러 N 처리)
-[3] 경량 정책 (LightPolicy) = ray CheckpointPolicy: seed 0-1 greedy 에서 지표 · 시계열 · 초기 상태 지문이 같다 (--skip-ray 로 생략)
+[2] 경량 정책 (LightPolicy) = ray CheckpointPolicy: seed 0-1 greedy 에서 지표 · 시계열 · 초기 상태 지문이 같다 (--skip-ray 로 생략)
 --checkpoint 를 안 주면 marl_models/best_model/learn_rule_rule 의 최신 model_vXX 를 쓴다.
 """
 import argparse
@@ -46,9 +45,6 @@ def main():
     ckpt = args.checkpoint or sorted(glob.glob("marl_models/best_model/learn_rule_rule/model_v*"))[-1]
     ckpt = os.path.abspath(ckpt)
     from rule_evaluation import compare as rc
-    from scale_evaluation import compare as sc
-    from scale_evaluation.scaling import scaled_env_config
-    cfg = {"checkpoint": ckpt, "mode": "greedy"}
 
     seeds = list(range(10))
     pols = rc.resolve_policies([{"label": "rule", "path": "rule"}, {"label": "model", "path": ckpt}])
@@ -59,13 +55,7 @@ def main():
     assert [(r["policy"], r["seed"]) for r in a[0]] == [(p, s) for p in ("rule", "model") for s in seeds]
     print(f"[1] main_rule path: workers 1 == {args.workers} ({len(a[0])} episodes, {len(a[1])} timeseries rows)")
 
-    base, n_ref, _ = sc.base_env(cfg)
-    rule = {"survivors": 1.0, "map": 0.5, "golden_time": 0.5, "max_episode_len": 0.5}
-    envs = {n: scaled_env_config(base, n, n_ref, rule) for n in (2, 5)}
-    a = sc.run_all(cfg, envs, list(range(4)), 1)
-    b = sc.run_all(cfg, envs, list(range(4)), args.workers)
-    assert _same(_strip(a[0]), _strip(b[0])) and a[1] == b[1], "main_scale 결과가 workers 수에 따라 다름"
-    print(f"[2] main_scale path: workers 1 == {args.workers} (N 2, 5 x 4 seeds, {len(a[0])} episodes)")
+    base = rc.eval_env_config()
 
     if not args.skip_ray:
         from env.role.simulation import RoleSimulation
@@ -83,7 +73,7 @@ def main():
             y, ty, gy = run_episode_detailed(sim, light, s)
             assert _same(_strip([x]), _strip([y])) and tx == ty and gx == gy, f"seed {s}: LightPolicy != CheckpointPolicy"
         heavy.trainer.stop()
-        print("[3] LightPolicy == CheckpointPolicy (ray trainer), seeds 0-1 greedy")
+        print("[2] LightPolicy == CheckpointPolicy (ray trainer), seeds 0-1 greedy")
     print("test_parallel_equiv: all ok")
 
 

@@ -16,6 +16,9 @@ best_model/<조합>/model_vXX 또는 학습 체크포인트) — eval_common/mod
 win / tie / loss, Wilcoxon signed-rank p (차이가 전부 0 이면 1), Holm 보정 p (같은 지표 안에서 쌍 수만큼), Cohen's d_z.
 설정: 실행 설정 = rule_evaluation/config/rule.yaml (CLI 인자가 우선). 평가 env = rule_evaluation/config/env_rule.yaml →
 role_rule.yaml → task_rule.yaml 병합 (training/config 와 같은 값으로 유지, tests/role/test_config.py) — 모든 정책에 같은 env.
+맵 크기 · 조난자 슬롯 · 에피소드 길이 (FREE_KEYS = rows, cols, max_targets, max_episode_len) 는 모델이 있어도 평가 yaml 값을 쓴다
+(나머지 관측 shape 키만 체크포인트 값으로 고정). 스케일 비교 = env_rule.yaml 의 크기 · UAV 수 · 조난자 수 · 골든타임을 바꿔
+조건마다 --tag 를 다르게 실행. 실제 실행 env 는 시작할 때 콘솔과 meta.json run_env 에 남는다.
 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  summary.txt (콘솔 출력과 같음), summary.csv, pairwise.csv, per_seed.csv,
       progress.csv (정책 · seed 별 진행률 10 % 구간 누적 발견 · 구조율, 역할 비율, 동시 추격 수), table_main.tex,
       table_conflict.tex (할당 충돌), figures/fig_compare_{bar,paired,seed,cumulative,roles,conflict,conflict_time}.pdf|png|csv,
@@ -142,6 +145,12 @@ def main():
     reference = set(cfg.get("reference_metrics") or [])
     t0 = time.time()
 
+    try:
+        env_cfg, warnings = compare.run_env_config(policies)
+    except ValueError as e:
+        raise SystemExit(f"[rule] {e}")
+    run_env = compare.run_env_summary(env_cfg)
+
     out = make_run_dir("rule_evaluation", cfg.get("tag") or "compare")
     print(f"[rule] {len(policies)} policies  seeds {cfg['seeds']} ({len(seeds)})  mode {cfg['mode']}  workers {workers}  -> "
           f"{os.path.relpath(out, ROOT)}")
@@ -149,12 +158,14 @@ def main():
         print(f"       {p['label']:<20} {p['combo']} ({p['describe']})  {p['model']}"
               + (f"  iteration {p['iteration']}" if p["iteration"] is not None else ""))
     print(f"       pairs: {', '.join(f'{a} - {b}' for a, b in pairs) or '-'}")
+    print("       env: " + "  ".join(f"{k} {v}" for k, v in run_env.items()))
+    if warnings:
+        print(f"       모델 값으로 고정한 키: {'; '.join(warnings)}")
     try:
         per, ts, env_cfg, warnings = compare.run_parallel(policies, seeds, workers, cfg.get("mode", "greedy"))
     except ValueError as e:
         raise SystemExit(f"[rule] {e}")
-    if warnings:
-        print(f"[rule] 모델 값으로 고정한 키: {'; '.join(warnings)}")
+    assert compare.run_env_summary(env_cfg) == run_env, "실행 env 가 시작할 때 계산한 값과 다름"
     summary = compare.summarize(per, labels, metrics, boot)
     pw = compare.pairwise(per, pairs, [m for m in metrics if m not in reference], lower, boot)
     prog = compare.progress_bins(ts)
@@ -182,7 +193,7 @@ def main():
         f.write(f"cd {shlex.quote(_CALLER_CWD)}\n{shlex.join([os.path.basename(sys.executable), *sys.argv])}\n")
     write_json(os.path.join(out, "meta.json"), {
         "script": "main_rule.py", "argv": sys.argv[1:], "policies": policies, "pairs": pairs,
-        "env_config_files": [os.path.relpath(f, ROOT) for f in RULE_FILES], "env_config_used": env_cfg,
+        "env_config_files": [os.path.relpath(f, ROOT) for f in RULE_FILES], "run_env": run_env, "env_config_used": env_cfg,
         "forced_checkpoint_keys": warnings, "git": git_info(), "seeds": seeds, "n_episodes_per_policy": len(seeds),
         "workers": workers,
         "statistics": f"mean ± std, 95% bootstrap CI ({boot['n']} resamples, seed {boot['seed']}), n = {len(seeds)} seeds per "

@@ -22,12 +22,10 @@ DEFAULT_FILES = [os.path.join(CONFIG_DIR, f) for f in ("env.yaml", "role.yaml", 
 # main_gui.py 전용 yaml (학습용과 key 구조가 같음, 병합 순서도 같음) — gui_evaluation/config/
 GUI_CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui_evaluation", "config")
 GUI_FILES = [os.path.join(GUI_CONFIG_DIR, f) for f in ("env_gui.yaml", "role_gui.yaml", "task_gui.yaml")]
-# main_rule.py / main_scale.py 평가 환경 yaml (학습용과 key 구조 · 병합 순서 같음) — rule_evaluation/config/, scale_evaluation/config/
+# main_rule.py 평가 환경 yaml (학습용과 key 구조 · 병합 순서 같음) — rule_evaluation/config/
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RULE_CONFIG_DIR = os.path.join(_REPO, "rule_evaluation", "config")
 RULE_FILES = [os.path.join(RULE_CONFIG_DIR, f) for f in ("env_rule.yaml", "role_rule.yaml", "task_rule.yaml")]
-SCALE_CONFIG_DIR = os.path.join(_REPO, "scale_evaluation", "config")
-SCALE_FILES = [os.path.join(SCALE_CONFIG_DIR, f) for f in ("env_scale.yaml", "role_scale.yaml", "task_scale.yaml")]
 
 
 def merge(base, over):
