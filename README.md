@@ -153,9 +153,11 @@ results/
 - 평가 환경 설정: `rule_evaluation/config/{env,role,task}_rule.yaml` 을 env → role → task 순으로 합친 값 (모든 정책에 같은 env,
   구성요소 모드만 정책마다). 실행 설정 (seed · mode · workers · bootstrap · 그림) 은 `rule.yaml`. 평가 env yaml 은 training/config 와
   같은 값으로 유지 (`tests/role/test_config.py`, 다르게 둘 키는 그 파일의 `ALLOWED` 에 추가). 조건을 바꾸려면 평가 env yaml 을 고친다.
-  체크포인트는 가중치와 관측 shape 를 정하는 키에만 쓴다: s_max · state_size · local_channels · global_downsample · cluster.k_max 가
+  체크포인트는 가중치와 관측 shape 를 정하는 키에만 쓴다: state_size · local_channels · global_downsample · cluster.k_max 가
   평가 env 와 다르면 체크포인트 값으로 고정해 meta.json `forced_checkpoint_keys` 에 남기고, 모델 파라미터와 무관한 크기 키
-  (FREE_KEYS = rows · cols · max_targets · max_episode_len, `eval_common/checkpoint_policy.py`) 는 평가 yaml 값을 그대로 쓴다.
+  (FREE_KEYS = rows · cols · max_targets · max_episode_len · s_max, `eval_common/checkpoint_policy.py`) 는 평가 yaml 값을 그대로 쓴다
+  (s_max 는 모델의 gnn.s_max 도 같은 값으로 맞춰 만들고, 체크포인트와 다르면 run_env 에 "32 (checkpoint 16)" 처럼 표시 — 규칙
+  정책의 후보 슬롯 (victim_slots) 도 s_max 개라 규칙 기준선도 같이 바뀐다).
 - 같은 seed 에서 모든 정책의 초기 상태 (맵 · depot · 조난자 · 골든타임 · UAV) 가 같은지 확인한다.
 
 결과 열 (per_seed.csv = 에피소드 하나):

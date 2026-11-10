@@ -4,7 +4,8 @@
 #   (role / rescue / explore: rule | learn) 는 eval_common/model_loader.py 가 meta.json / run_meta.json / 폴더 이름 / params.json 으로 정한다
 # 이 파일 = 실행 설정만 (정책 목록, seed, mode, workers, 지표, bootstrap, 그림). 평가 env 조건은 같은 폴더의 env_rule.yaml ->
 #   role_rule.yaml -> task_rule.yaml 을 합친 값 (모든 정책에 같은 env, training/config 와 같은 값으로 유지 — tests/role/test_config.py)
-#   모델은 가중치 · 구성요소 모드와 관측 shape 키 (SHAPE_KEYS + cluster.k_max) 에만 쓰고, 다르면 모델 값으로 고정 (규칙 정책도 같은 env)
+#   모델은 가중치 · 구성요소 모드와 관측 shape 키 (SHAPE_KEYS + cluster.k_max, FREE_KEYS 제외) 에만 쓰고, 다르면 모델 값으로 고정 (규칙 정책도 같은 env)
+#   FREE_KEYS (rows · cols · max_targets · max_episode_len · s_max) 는 env_rule.yaml 값 그대로 — eval_common/checkpoint_policy.py
 # 결과: results/rule_evaluation/<YYYYMMDD_HHMMSS>_<tag>/  summary.txt, summary.csv, pairwise.csv, per_seed.csv, table_main.tex,
 #       table_conflict.tex, progress.csv, figures/fig_compare_{bar,paired,seed,cumulative,roles,conflict,conflict_time}.pdf|png|csv, config.yaml (실제 설정), command.txt, meta.json (정책 정보 · env · git)
 

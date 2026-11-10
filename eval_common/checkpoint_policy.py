@@ -29,7 +29,8 @@ import numpy as np
 # 관측 / 모델 shape (또는 관측 정규화 분모) 를 정하는 env 설정 — 실행 시에도 체크포인트 값을 따라야 한다
 SHAPE_KEYS = ("max_targets", "s_max", "state_size", "local_channels", "global_downsample", "rows", "cols", "max_episode_len")
 # 모델 파라미터와 무관한 크기 키 — 평가에서는 체크포인트 값으로 고정하지 않고 평가 yaml 값을 쓴다
-FREE_KEYS = ("rows", "cols", "max_targets", "max_episode_len")
+# (s_max: S 노드는 attention 집계 + 포인터 점수라 슬롯 수 크기의 파라미터가 없음 — 모델을 만들 때 gnn.s_max = env s_max)
+FREE_KEYS = ("rows", "cols", "max_targets", "max_episode_len", "s_max")
 # 입력 정규화 분모 — 달라도 실행은 되지만 학습 때와 입력 스케일이 달라진다 (env_priority 에서 경고)
 NORM_KEYS = ("max_episode_len", "d_max", "rows", "cols", "explore.size_ref")
 MODES = ("greedy", "sample")
@@ -43,7 +44,7 @@ def is_role_config(train_cfg):
 def runtime_env_config(train_env, caller_env=None, free_keys=()):
     """실행용 env_config = 호출자 env_config (평가 yaml 등) 그대로, SHAPE_KEYS (+ cluster.k_max) 만 체크포인트 값으로 고정.
     호출자 값이 없으면 (None) 체크포인트 env_config. free_keys: SHAPE_KEYS 중 호출자 값을 그대로 둘 키 (main_rule: FREE_KEYS =
-    rows / cols / max_targets / max_episode_len — 모델 파라미터와 무관하고 입력 정규화 분모만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
+    rows / cols / max_targets / max_episode_len / s_max — 모델 파라미터와 무관, 입력 정규화 분모 · S 노드 수만 바뀜). 반환: (env_config, 경고 문자열 목록)."""
     cfg = dict(train_env if caller_env is None else caller_env)
     warnings = []
     for k in SHAPE_KEYS:

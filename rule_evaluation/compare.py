@@ -8,8 +8,9 @@
     run_parallel(policies, seeds, workers, mode)   (정책 × seed) 작업을 한 워커 풀에서 병렬 실행 (eval_common/parallel.py,
                                경량 정책) -> per 행 (policy = label, 정책 · seed 순), step 별 시계열 행, 실제 env_config, 강제된 키.
                                같은 seed 의 초기 상태 지문 (맵 / depot / 조난자 / 골든타임) 이 정책마다 다르면 AssertionError
-    run_env_summary(env)       실제 실행 env 의 크기 · 조건 (rows, cols, max_targets, max_episode_len, d_max, UAV 수, num_targets,
-                               target_golden_time) — 콘솔 · meta.json
+    run_env_summary(env, policies)   실제 실행 env 의 크기 · 조건 (rows, cols, max_targets, max_episode_len, d_max, s_max, UAV 수,
+                               num_targets, target_golden_time) — 콘솔 · meta.json. s_max 가 모델 체크포인트 값과 다르면
+                               "32 (checkpoint 16)" 처럼 둘 다
     eval_env_config(files)     평가 env = files (기본 rule_evaluation/config 의 env_rule → role_rule → task_rule.yaml) 를 합친 env_config
     summarize(per, labels, ...)    정책 · 지표별 평균, 표준편차, bootstrap 95% CI
     pairwise(per, pairs, ...)      쌍 · 지표별 seed 차이 (A - B) 평균 · bootstrap CI, win / tie / loss, Wilcoxon p, Holm p
@@ -19,7 +20,8 @@
     progress_stats(rows, ...)      정책 · 구간별 seed 평균 + bootstrap 95% CI (fig_compare_cumulative · _roles · _conflict_time)
 평가 env 는 모든 정책에 같다 (구성요소 모드만 정책마다). 모델은 가중치 · 구성요소 모드와 관측 shape 키 (SHAPE_KEYS + cluster.k_max,
 eval_common/checkpoint_policy.py runtime_env_config) 에만 쓰고, 그 키가 평가 env 와 다르면 모델 값으로 고정 — 단 FREE_KEYS
-(rows / cols / max_targets / max_episode_len, 모델 파라미터와 무관) 는 평가 yaml 값을 그대로 쓴다. 모델끼리 고정 값이
+(rows / cols / max_targets / max_episode_len / s_max, 모델 파라미터와 무관) 는 평가 yaml 값을 그대로 쓴다 (s_max 를 바꾸면
+규칙 정책의 후보 (victim_slots) 도 같이 바뀜). 모델끼리 고정 값이
 다르면 같은 조건으로 비교할 수 없으므로 ValueError. 규칙 정책도 그 고정된 env 로 실행한다.
 """
 import itertools
@@ -134,10 +136,17 @@ def run_parallel(policies, seeds, workers, mode="greedy", env_config=None, label
     return per, ts, res[0].env_used, warnings
 
 
-def run_env_summary(env):
-    """실제 실행 env 의 크기 · 조건 (yaml 값이 들어갔는지 확인용). d_max = 설정값 (null 이면 rows + cols)."""
+def run_env_summary(env, policies=()):
+    """실제 실행 env 의 크기 · 조건 (yaml 값이 들어갔는지 확인용). d_max = 설정값 (null 이면 rows + cols).
+    s_max 가 모델 체크포인트 값과 다르면 "32 (checkpoint 16)"."""
+    from eval_common.checkpoint_policy import load_train_config
+    from eval_common.model_loader import find_checkpoint
+    s = int(env.get("s_max") or 16)
+    ck = sorted({int(load_train_config(find_checkpoint(p["path"])).get("env_config", {}).get("s_max") or 16)
+                 for p in policies if p["path"]})
     return {"rows": env["rows"], "cols": env["cols"], "max_targets": env["max_targets"],
             "max_episode_len": env["max_episode_len"], "d_max": env.get("d_max") or env["rows"] + env["cols"],
+            "s_max": s if ck in ([], [s]) else f"{s} (checkpoint {', '.join(map(str, ck))})",
             "n_uav": len(env.get("agents") or []), "num_targets": env.get("num_targets"),
             "target_golden_time": env.get("target_golden_time")}
 
