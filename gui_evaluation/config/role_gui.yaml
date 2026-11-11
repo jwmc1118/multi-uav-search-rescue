@@ -15,7 +15,7 @@ env_config:
   # ---- 그리디 정책 (policies/role_rules.py RuleDecider, run_rules · main rules 모드 · rule 헤드) ----
   #   role + rescue (주기 · 이벤트 "1", 그룹): 차례 (급한 생존자에 가장 가까운 UAV) 의 담당 후보 생존자 -> RESCUE,
   #     없으면 EXPLORE (용량 0 RETURN)
-  #   role + rescue (이벤트 "2" / "3" / "4", 한 대): 용량 0 RETURN, 할당 가능 생존자 있음 -> RESCUE (EDF), 없으면 EXPLORE
+  #   role + rescue (이벤트 "2" / "3" / "4", 한 대): 용량 0 RETURN, 할당 가능 생존자 있음 -> RESCUE (여유 시간 τ - t - d 최소 -> 생존자 번호), 없으면 EXPLORE
   #   explore 1 단계: 담당 후보 덩어리 (아래 1 단계 차례), 담당 후보가 없으면 같은 점수 최대 덩어리.
   #     2 단계: 참여자 전원 1:1 Hungarian (구간까지 BFS 거리 합 최소, goal 우대 없음)
 

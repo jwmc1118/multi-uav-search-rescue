@@ -66,7 +66,7 @@ def slot_snapshot(sim):
          dropped        잘려서 victim_slots (rescue 행동 / S 노드 앞쪽) 에 못 들어간 후보 수 = max(0, n_assignable - s_max)
          reachable      잘린 후보 중 d <= τ - t (골든타임 안 도달) 인 수 — 후보 조건 (_assignable) 이 같은 조건이라 항상 = dropped
          urgent         잘린 후보 중 slack (τ - t - d) 이 남은 후보의 최소 slack 보다 작은 (더 급한) 수
-         best_dropped   전체 후보에서 EDF (rule_rescue 키: 마감 -> BFS -> id) 로 고를 생존자가 잘린 쪽에 있음
+         best_dropped   전체 후보에서 규칙 정책 기준 (rule_rescue 한 대 키: slack -> id) 으로 고를 생존자가 잘린 쪽에 있음
       K  n_blobs, dropped (슬롯 밖 덩어리 수), dropped_cells (그 셀 수 합)"""
     from env.core.targets import deadline
     out = []
@@ -79,7 +79,7 @@ def slot_snapshot(sim):
         kept, cut = ok[:sim.s_max], ok[sim.s_max:]
         slack = {ti: deadline(sim.targets[ti]) - sim.time - sim._dist(i, sim.targets[ti].pos) for ti in ok}
         min_kept = min((slack[ti] for ti in kept), default=None)
-        edf = min(ok, key=lambda ti: (deadline(sim.targets[ti]), sim._dist(i, sim.targets[ti].pos), ti)) if ok else None
+        best = min(ok, key=lambda ti: (slack[ti], ti)) if ok else None
         g = sim.comp[i]
         blobs = sim.blobs[g] if g < len(getattr(sim, "blobs", [])) else []
         slot_ids = {b.id for b in sim.group_clusters[g]}
@@ -87,7 +87,7 @@ def slot_snapshot(sim):
         out.append({"n_assignable": len(ok), "dropped": len(cut),
                     "reachable": sum(1 for ti in cut if 0 <= sim._dist(i, sim.targets[ti].pos) <= deadline(sim.targets[ti]) - sim.time),
                     "urgent": sum(1 for ti in cut if min_kept is not None and slack[ti] < min_kept),
-                    "best_dropped": bool(cut) and edf in cut,
+                    "best_dropped": bool(cut) and best in cut,
                     "n_blobs": len(blobs), "k_dropped": len(dk), "k_dropped_cells": int(sum(b.size for b in dk))})
     return out
 

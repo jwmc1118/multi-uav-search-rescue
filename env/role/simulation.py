@@ -105,7 +105,7 @@ ROLES = (Mode.EXPLORE, Mode.RESCUE, Mode.RETURN)      # role 행동 인덱스 = 
 N_ROLES = 3
 EVENTS = ("periodic", "1", "2", "3", "4")             # Role 재결정 원인 (periodic = t % period == 0, 1 생존자 증가, 2 구조 완료,
                                                       #   3 Return 완료, 4 목표 무효). periodic / 1 = 여러 대 (규칙: 그룹 그리디),
-                                                      #   2 / 3 / 4 = 한 대 (EDF)
+                                                      #   2 / 3 / 4 = 한 대 (여유 시간 최소)
 EXPLORE_EVENTS = ("split", "merge")                   # 덩어리 쪼개짐 / 합쳐짐 (재결정 없음, 기록용)
 INVALIDATING = {"2", "3", "4"}                        # 당사자 목표 무효 (Context goal_valid) — periodic · "1" 은 목표 유지
 NEIGHBOR_BINS = (0.25, 0.5, 0.75, 1.0)                # 1-hop 이웃 거리 / R_c 구간 (마지막 = 1 초과, hysteresis)

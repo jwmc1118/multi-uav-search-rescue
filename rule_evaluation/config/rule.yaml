@@ -56,7 +56,7 @@ metrics:                        # seed 별 지표 (eval_common/episode.py run_ep
   - dropped_S                   # 잘린 할당 가능 후보 수 합 (= dropped_reachable_S: 후보 조건이 골든타임 안 도달)
   - dropped_S_per_dec           # 결정당 잘린 후보 수
   - dropped_urgent_S            # 잘린 후보 중 남은 후보의 최소 slack 보다 급한 후보 수 합
-  - best_dropped_S              # EDF 로 고를 생존자가 잘린 쪽에 있던 결정 수
+  - best_dropped_S              # 규칙 기준 (여유 시간 최소) 으로 고를 생존자가 잘린 쪽에 있던 결정 수
   - trunc_decisions_K           # 덩어리 수 > k_max 인 1 단계 결정 수
   - trunc_frac_K
   - dropped_K                   # 잘린 덩어리 수 합

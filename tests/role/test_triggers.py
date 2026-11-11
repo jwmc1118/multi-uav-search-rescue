@@ -10,13 +10,17 @@
  [4] RESCUE 재결정: 자기 현재 목표는 마스크되지 않음, 재결정하지 않는 UAV 가 맡은 생존자는 막힘
  [5] 같은 생존자 재선택: rescue_valid 0 (표본 아님), 목표 전환 아님. 유효한 목표를 두고 다른 생존자로 바꾸면 새 표본 + 자발적 목표 전환
  [6] 용량 0 UAV 가 주기 재결정에서 EXPLORE 선택 가능 (역할 마스크 RETURN · EXPLORE), cap0_explore_choice 기록
- [7] 규칙 정책: periodic / "1" 은 그룹 그리디 (담당 후보 생존자), "2" / "3" / "4" 는 한 대 EDF
+ [7] 규칙 정책: periodic / "1" 은 그룹 그리디 (담당 후보 생존자), "2" / "3" / "4" 는 한 대 여유 시간 최소
+     (slack = τ - t - d 작은 순 -> 생존자 번호)
+ [8] 한 대 규칙 = 여유 시간 기준 (EDF 아님): t = 0, 생존자 1 (τ 100, d 80, slack 20) vs 생존자 2 (τ 90, d 10, slack 80) -> 1.
+     같은 상태에서 role_front (D_0 = {A}) 의 담당 후보와 같다
+ [9] slack 동률: 더 가까운 생존자의 번호가 더 클 때 번호 작은 (먼) 쪽 — rule_rescue = role_front (D_0 = {A}) claim
 """
 import numpy as np
 
 from env.core.modes import Mode
 from tests.role.test_events_targeted import Recorder, add_victim, fresh, three_roles
-from tests.role.test_explore import connect, line, place, set_front, tick
+from tests.role.test_explore import COLS, ROWS, connect, line, place, set_front, tick
 
 E, R, D = Mode.EXPLORE.value, Mode.RESCUE.value, Mode.RETURN.value
 
@@ -204,11 +208,68 @@ def check_rule_paths():
         sim.cur_claim = {0: near_late}                            # 담당 후보 (그룹 그리디 차례가 정한 생존자)
         picks[e] = (multi_event(sim, 0), sim.victim_slots[0][rule_rescue(sim, 0, m)])
     assert all(picks[e] == (True, near_late) for e in ("periodic", "1")), picks
-    assert all(picks[e] == (False, far_early) for e in ("2", "3", "4")), picks          # EDF: 마감 빠른 쪽
+    assert all(picks[e] == (False, far_early) for e in ("2", "3", "4")), picks          # slack 45 < 198
     sim.events = [{"periodic", "2"}]
     assert not multi_event(sim, 0)                                # 섞이면 한 대 규칙
-    print("[7] rule policy: periodic / 1 -> group greedy (claimed survivor), 2 / 3 / 4 -> single-UAV EDF "
-          "(earliest deadline); mixed causes -> EDF")
+    print("[7] rule policy: periodic / 1 -> group greedy (claimed survivor), 2 / 3 / 4 -> single-UAV least slack; "
+          "mixed causes -> single-UAV rule")
+
+
+def _front_claim(sim):
+    """role_front 를 D_0 = {UAV 0} 에 적용한 담당 후보 생존자 (env _decide 와 같은 입력)."""
+    import torch
+
+    from policies.decision_order import role_front, role_sigma
+    X = sim._order_inputs()
+    d0 = torch.zeros(1, sim.n_agents, dtype=torch.bool)
+    d0[0, 0] = True
+    sig = role_sigma(X["ids"], X["slack"], X["valid"], X["group"], d0)
+    sel, claim = role_front(X["group"], d0, X["cap"], X["ids"], X["rd"], sig, X["valid"])
+    assert bool(sel[0, 0]) and int(claim[0, 0]) >= 0, (sel, claim)
+    return int(X["ids"][0, 0, int(claim[0, 0])])
+
+
+def check_rule_slack():
+    from policies.role_rules import rule_rescue
+    sim = fresh(1)
+    place(sim, [(1, 1)])
+    wall = np.ones((ROWS, COLS), bool)                            # 뱀 모양 통로만 열림: 행 1 -> 행 3 -> 행 5
+    wall[1, 1:39] = wall[2:4, 38] = wall[3, 1:39] = wall[4:6, 1] = wall[5, 1:39] = False
+    sim.knowledge.known_obstacle[0][:] = wall
+    sim.knowledge.known_free[0][:] = ~wall
+    sim.time = 0
+    tick(sim)
+    far = tuple(int(x) for x in np.argwhere(sim.fields[0] == 80)[0])      # BFS 거리 80 인 칸 (통로 위)
+    v1 = add_victim(sim, far, deadline=100)
+    v2 = add_victim(sim, (1, 11), deadline=90)
+    tick(sim)
+    d = {v: sim._dist(0, sim.targets[v].pos) for v in (v1, v2)}
+    assert d == {v1: 80, v2: 10}, d
+    sim.events = [{"2"}]
+    m = sim.rescue_mask(0)
+    pick = sim.victim_slots[0][rule_rescue(sim, 0, m)]
+    assert pick == v1, (pick, d)                                  # EDF (마감 빠른 쪽) 였다면 v2
+    assert _front_claim(sim) == pick
+    print(f"[8] single-UAV rule = least slack: v1 (tau 100, d {d[v1]}, slack 20) over v2 (tau 90, d {d[v2]}, slack 80) "
+          f"-> v{pick + 1}; role_front (D_0 = {{A}}) claim = same")
+
+
+def check_rule_slack_tie():
+    from policies.role_rules import rule_rescue
+    sim = fresh(1)
+    sim.time = 0
+    place(sim, [(15, 10)])
+    far = add_victim(sim, (15, 20), deadline=60)                 # 번호 0, d 10, slack 50
+    near = add_victim(sim, (15, 12), deadline=52)                # 번호 1, d 2,  slack 50 (더 가깝고 번호 큼)
+    tick(sim)
+    d = {v: sim._dist(0, sim.targets[v].pos) for v in (far, near)}
+    assert d == {far: 10, near: 2} and (far, near) == (0, 1), d
+    sim.events = [{"2"}]
+    pick = sim.victim_slots[0][rule_rescue(sim, 0, sim.rescue_mask(0))]
+    front = _front_claim(sim)
+    assert pick == front == far, (pick, front)                   # (slack, 거리) 순이었다면 near
+    print(f"[9] slack tie (50 = 50): rule_rescue -> survivor {pick} (d {d[far]}, lower id) over survivor {near} (d {d[near]}); "
+          f"role_front (D_0 = {{A}}) claim = {front}")
 
 
 if __name__ == "__main__":
@@ -219,4 +280,6 @@ if __name__ == "__main__":
     check_same_target_option()
     check_cap0_explore()
     check_rule_paths()
+    check_rule_slack()
+    check_rule_slack_tie()
     print("test_triggers: all ok")

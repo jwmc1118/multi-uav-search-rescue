@@ -6,7 +6,7 @@ sim.cur_xclaim (덩어리 슬롯) 에 넣어 둔다. 그리디는 담당 후보�
     rule_role    : 주기 · 이벤트 "1" (여러 대 재결정, 그룹 그리디): 담당 후보 생존자가 있으면 RESCUE, 없으면 EXPLORE
                    (용량 0 이면 RETURN)
                    이벤트 "2" / "3" / "4" (한 대): 용량 0 -> RETURN, 할당 가능 생존자 있음 -> RESCUE, 없으면 EXPLORE
-    rule_rescue  : 주기 · "1" 은 담당 후보 생존자, 그 외 EDF (마감 τ 빠른 순 -> BFS 거리 -> 번호)
+    rule_rescue  : 주기 · "1" 은 담당 후보 생존자, 그 외 여유 시간 최소 (slack = τ - t - d 작은 순 -> 생존자 번호, role_front 와 같은 순서)
     rule_explore : 1 단계 — 담당 후보 덩어리 (explore_front: 남은 UAV x 닿는 덩어리 쌍 중 점수 (N_m / (n_m + 1)) / (d + 1)^α
                    최대, 한 대마다 n_m 갱신). 담당 후보가 없거나 마스크 밖이면 같은 점수 최대 덩어리
     rule_explore_sub : 2 단계 — 덩어리 참여자 전원을 1:1 Hungarian (비용 = 구간까지 BFS 최소 거리, 합 최소, goal 우대 없음)
@@ -50,7 +50,9 @@ def rule_role(sim, i, mask):
 
 
 def rule_rescue(sim, i, mask):
-    """이벤트 1 / 2: 담당 후보 생존자 (마스크 안이면). 그 외 EDF: 마감 τ 빠른 순 -> BFS 거리 -> 생존자 번호."""
+    """주기 / 이벤트 1: 담당 후보 생존자 (마스크 안이면). 그 외 (한 대): 여유 시간 slack_i(u) = τ_u - t - d_iu
+    (role_sigma / us_slack 과 같은 식, d = BFS 거리) 작은 순 -> 생존자 번호 (policies/decision_order.py role_front 를
+    D_0 = {i} 에 적용한 것과 같은 순서 — 번호가 유일하므로 거리는 키에 없음)."""
     if multi_event(sim, i):
         u = getattr(sim, "cur_claim", {}).get(i)
         if u is not None and u in sim.victim_slots[i]:
@@ -61,7 +63,7 @@ def rule_rescue(sim, i, mask):
     for s, ti in enumerate(sim.victim_slots[i]):
         if not mask[s]:
             continue
-        key = (_deadline(sim.targets[ti]), sim._dist(i, sim.targets[ti].pos), ti)
+        key = (_deadline(sim.targets[ti]) - sim.time - sim._dist(i, sim.targets[ti].pos), ti)
         if best is None or key < best[0]:
             best = (key, s)
     return best[1]
@@ -147,7 +149,7 @@ def rule_explore_sub(sim, i, mask):
 
 
 class RuleDecider:
-    """그리디 정책 (role + rescue: 담당 후보 / EDF, explore 1 단계: 점수 (N / (n + 1)) / (d + 1)^α 차례, 2 단계: 거리 Hungarian)."""
+    """그리디 정책 (role + rescue: 담당 후보 / 여유 시간 최소, explore 1 단계: 점수 (N / (n + 1)) / (d + 1)^α 차례, 2 단계: 거리 Hungarian)."""
 
     def role(self, sim, i, mask):
         return rule_role(sim, i, mask)

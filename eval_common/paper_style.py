@@ -32,7 +32,7 @@ LABEL = {"rescue_rate": "Rescue rate", "expire_rate": "Expire rate", "discover_r
          "escalations": "Escalations", "rescued_per_uav": "Rescued per UAV", "infer_ms_per_decision": "Inference (ms/decision)",
          "trunc_decisions_S": "Truncated decisions (S)", "trunc_frac_S": "Truncated-decision ratio (S)",
          "dropped_S": "Dropped candidates (S)", "dropped_S_per_dec": "Dropped per decision (S)",
-         "dropped_urgent_S": "Dropped urgent (S)", "best_dropped_S": "EDF choice dropped (S)",
+         "dropped_urgent_S": "Dropped urgent (S)", "best_dropped_S": "Least-slack choice dropped (S)",
          "trunc_decisions_K": "Truncated decisions (K)", "trunc_frac_K": "Truncated-decision ratio (K)",
          "dropped_K": "Dropped blobs (K)", "dropped_K_cells": "Dropped frontier cells (K)",
          "s_nodes_overflow": "S-node overflow", "ub_loose": r"Upper bound $UB_\mathrm{loose}$",

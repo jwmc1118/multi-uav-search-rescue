@@ -23,7 +23,7 @@ main_rule.py          여러 정책 (기본 rule_rule_rule · learn_rule_rule ·
 env/core/             공통 세계: 맵 생성 · 조난자 · 센싱 · n-hop 지도 병합 · belief · BFS · critic 관측
 env/role/             RoleSimulation (역할 마스크 · 재결정 이벤트 · 결정 순서 · 보상 · 관측), explore (덩어리 · 구간),
                       clusters (DBSCAN · k-medoids), graph_obs (그래프 사양), gym_env (RoleEnv)
-policies/             규칙 정책 (role_rules.py: RuleDecider, EDF 구조, 덩어리 점수 차례) · decision_order (결정 순서, 학습 모델과 공용)
+policies/             규칙 정책 (role_rules.py: RuleDecider, 여유 시간 최소 구조, 덩어리 점수 차례) · decision_order (결정 순서, 학습 모델과 공용)
 models/role/          gnn (HeteroGNN), net (RoleNet: role / rescue / explore 네트워크 + critic), rllib_model
 models/common/        critic (CTDE rich critic) · encoders · value_norm
 training/             train.py (엔트리포인트), config/ (env / role / task.yaml), role/ (PPO loss · GAE · action dist),
@@ -118,7 +118,8 @@ python -m tests.role.smoke_role_policy    # 학습 경로 (rollout · 재생 · 
 
 - 재결정하면 역할부터 하위 할당까지 다시 한다 (RESCUE: 자기 현재 목표도 후보, EXPLORE: 지금 덩어리도 후보로 1 단계 → 구간 분할 → 2 단계).
 - 같은 생존자 / 덩어리를 다시 고르면 학습 표본이 아니다 (rescue / explore valid 0).
-- 규칙 정책: periodic / "1" 은 그룹 그리디 (담당 후보), "2" / "3" / "4" 는 한 대 EDF.
+- 규칙 정책: periodic / "1" 은 그룹 그리디 (담당 후보), "2" / "3" / "4" 는 한 대 여유 시간 최소 (slack = τ − t − d 작은 순 → 생존자
+  번호, role_sigma / us_slack 과 같은 식 · role_front 를 한 대에 적용한 것과 같은 순서).
 - explore 그리디: 1 단계 차례 = 남은 UAV × 닿는 덩어리 쌍 중 점수 (N_m/(n_m+1))/(d+1)^α 최대 (`order_dist_alpha`), 담당 후보가 없으면
   같은 점수 최대 덩어리. 2 단계 = 덩어리 참여자 전원을 구간까지 BFS 거리 합 최소 1:1 Hungarian (goal 우대 없음).
 
@@ -173,7 +174,7 @@ results/
 | rescued_per_uav / decisions / infer_ms_per_decision | UAV 당 구조 수, 결정 수, 모델 추론 시간 (CPU, 워커당 스레드 1) |
 | role_decisions, trunc_decisions_S, trunc_frac_S | 역할 결정 수, 그중 할당 가능 후보 > s_max 인 결정 수 · 비율 |
 | dropped_S (= dropped_reachable_S), dropped_S_per_dec | 잘린 할당 가능 후보 수 합 · 결정당 (후보 조건이 골든타임 안 도달이라 reachable 과 같음) |
-| dropped_urgent_S, best_dropped_S | 잘린 후보 중 남은 후보보다 급한 수, EDF 선택이 잘린 쪽에 있던 결정 수 |
+| dropped_urgent_S, best_dropped_S | 잘린 후보 중 남은 후보보다 급한 수, 규칙 기준 (여유 시간 최소) 선택이 잘린 쪽에 있던 결정 수 |
 | s1_decisions, trunc_decisions_K, trunc_frac_K, dropped_K, dropped_K_cells | explore 1 단계 결정 기준 덩어리 > k_max 잘림 (덩어리 수 · frontier 셀 수) |
 | s_nodes_overflow | 그룹이 아는 미구조 생존자 전체 > s_max 인 역할 결정 수 (예전 survivor_truncated, S 노드 넘침) |
 | ub_loose / ub_greedy / rescue_over_ub | depot 에서 골든타임 안 도달 가능 비율, 전지적 EDF 스케줄 구조율, 구조율 / ub_loose |

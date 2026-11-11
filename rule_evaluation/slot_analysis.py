@@ -97,7 +97,7 @@ def main():
     md = [f"N = {len(base['agents'])}, num_targets {base['num_targets']}, max_episode_len {base['max_episode_len']}, "
           f"k_max {base.get('cluster', {}).get('k_max')}, seeds {args.seeds} ({len(seeds)}), rule policy\n"]
     hdr = ["s_max", "rescue", "expire", "role dec/ep", "trunc S frac", "dropped S/dec", "dropped S/trunc dec",
-           "urgent/dec", "EDF dropped frac", "n_assignable mean", "n_assignable max", "S-node overflow/ep",
+           "urgent/dec", "least-slack dropped frac", "n_assignable mean", "n_assignable max", "S-node overflow/ep",
            "trunc K frac", "dropped K/dec", "dropped K cells/dec", "reachable==dropped"]
     rows = []
     for S in s_list:
@@ -112,7 +112,7 @@ def main():
     S0 = s_list[0]
     d0 = [x for x in dec if x["s_max"] == S0]
     p0 = [r for r in per if r["s_max"] == S0]
-    hdr2 = ["bin", "episodes", "rescue", "trunc S frac", "dropped S/dec", "urgent/dec", "EDF dropped frac", "n_assignable mean",
+    hdr2 = ["bin", "episodes", "rescue", "trunc S frac", "dropped S/dec", "urgent/dec", "least-slack dropped frac", "n_assignable mean",
             "trunc K frac", "dropped K/dec"]
     rows = []
     for lo, hi in T_BINS:
@@ -122,7 +122,7 @@ def main():
                      d["dropped_S_per_dec"], d["urgent_per_dec"], d["best_dropped_frac"], d["n_assignable_mean"],
                      d["trunc_frac_K"], d["dropped_K_per_dec"]])
     md.append(_table(f"조난자 수 구간별 (s_max {S0})", hdr2, rows))
-    hdr3 = ["phase (t / max_len)", "role dec", "trunc S frac", "dropped S/dec", "urgent/dec", "EDF dropped frac",
+    hdr3 = ["phase (t / max_len)", "role dec", "trunc S frac", "dropped S/dec", "urgent/dec", "least-slack dropped frac",
             "n_assignable mean", "s1 dec", "trunc K frac", "dropped K/dec"]
     rows = []
     for name, a, b in PHASES:
